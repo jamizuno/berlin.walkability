@@ -10,7 +10,7 @@ Interactive Map and Graph analysis of transit walkability in Berlin (Mitte).
 
 ## Project Structure
 - `generate_berlin_transit_map.py`: The main analysis script.
-- `berlin_walkability.html`: Interactive Folium map (open in browser).
+- `index.html`: Interactive Folium map (open in browser).
 - `berlin_walkability_graph.pt`: Graph representation for GeoAI analysis.
 
 ## Usage

@@ -172,7 +172,7 @@ def run_analysis(place=PLACE, walk_min=WALK_MINUTES):
     </div>'''
     m.get_root().html.add_child(folium.Element(title_html))
 
-    map_path = "berlin_walkability.html"
+    map_path = "index.html"
     m.save(map_path)
     print(f"✅ Folium map saved to: {map_path}")
 
