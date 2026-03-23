@@ -1,0 +1,6 @@
+cache/
+__pycache__/
+*.txt
+city2graph_proximity_dir.txt
+city2graph_proximity_help.txt
+city2graph_help.txt
