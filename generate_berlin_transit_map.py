@@ -39,6 +39,11 @@ WALK_COLORS = {
     10: "#ae54c4",
 }
 WALK_OPACITY = 0.5
+EDGE_DIFFUSION_METERS = {
+    5: 60,
+    10: 120,
+}
+EDGE_FEATHER_OPACITIES = [0.18, 0.12, 0.07, 0.035]
 STATION_FILL = "#313873"
 # -----------------------------------------------------------------------------
 
@@ -248,6 +253,32 @@ def build_walk_zones(graph, stations, walk_levels):
     return zones
 
 
+def build_edge_feathers(geometry, spread_meters):
+    metric_geometry = gpd.GeoSeries([geometry], crs="EPSG:4326").to_crs(METRIC_CRS).iloc[0]
+    previous_geometry = metric_geometry
+    feather_geometries = []
+
+    for step in range(1, len(EDGE_FEATHER_OPACITIES) + 1):
+        distance = spread_meters * step / len(EDGE_FEATHER_OPACITIES)
+        expanded_geometry = metric_geometry.buffer(distance)
+        feather_geometry = expanded_geometry.difference(previous_geometry)
+
+        if not feather_geometry.is_empty:
+            if not feather_geometry.is_valid:
+                feather_geometry = feather_geometry.buffer(0)
+            feather_geometry = feather_geometry.simplify(
+                SIMPLIFY_TOLERANCE_METERS,
+                preserve_topology=True,
+            )
+            feather_geometries.append(
+                gpd.GeoSeries([feather_geometry], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+            )
+
+        previous_geometry = expanded_geometry
+
+    return feather_geometries
+
+
 def add_map_panel(map_object, station_count):
     panel_html = f"""
     <style>
@@ -346,22 +377,49 @@ def render_map(place, stations, walk_zones):
 
     for level in sorted(walk_zones, reverse=True):
         color = WALK_COLORS[level]
+        zone_layer = folium.FeatureGroup(
+            name=f"{level} min walk from S-Bahn/U-Bahn",
+            show=True,
+        )
+        feathers = build_edge_feathers(walk_zones[level], EDGE_DIFFUSION_METERS[level])
+        for feather_geometry, feather_opacity in reversed(
+            list(zip(feathers, EDGE_FEATHER_OPACITIES))
+        ):
+            folium.GeoJson(
+                gpd.GeoDataFrame(
+                    {"minutes": [level], "mode": ["edge feather"]},
+                    geometry=[feather_geometry],
+                    crs="EPSG:4326",
+                ).__geo_interface__,
+                name=f"{level} min soft edge",
+                control=False,
+                style_function=lambda _, c=color, o=feather_opacity: {
+                    "fillColor": c,
+                    "color": c,
+                    "weight": 0,
+                    "fillOpacity": o,
+                    "opacity": 0,
+                },
+            ).add_to(zone_layer)
+
         folium.GeoJson(
             gpd.GeoDataFrame(
                 {"minutes": [level], "mode": ["walk"]},
                 geometry=[walk_zones[level]],
                 crs="EPSG:4326",
             ).__geo_interface__,
-            name=f"{level} min walk from S-Bahn/U-Bahn",
+            name=f"{level} min walk area",
+            control=False,
             style_function=lambda _, c=color: {
                 "fillColor": c,
                 "color": c,
-                "weight": 2,
+                "weight": 0,
                 "fillOpacity": WALK_OPACITY,
-                "opacity": WALK_OPACITY,
+                "opacity": 0,
             },
             tooltip=f"{level} min walk to S-Bahn or U-Bahn",
-        ).add_to(map_object)
+        ).add_to(zone_layer)
+        zone_layer.add_to(map_object)
 
     station_layer = folium.FeatureGroup(name="S-Bahn and U-Bahn stations", show=True)
     for station in stations.itertuples():
