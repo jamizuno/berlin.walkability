@@ -45,6 +45,7 @@ EDGE_DIFFUSION_METERS = {
 }
 EDGE_FEATHER_OPACITIES = [0.18, 0.12, 0.07, 0.035]
 STATION_FILL = "#313873"
+STATION_ICON_SIZE = 12
 # -----------------------------------------------------------------------------
 
 
@@ -137,6 +138,10 @@ def combine_station_kinds(values):
     if "U-Bahn" in text:
         kinds.append("U-Bahn")
     return " + ".join(kinds) if kinds else "S/U-Bahn"
+
+
+def station_symbol(kind):
+    return "S" if "S-Bahn" in kind else "U"
 
 
 def fetch_su_stations(place):
@@ -333,6 +338,31 @@ def add_map_panel(map_object, station_count):
         vertical-align: -2px;
         border: 1px solid rgba(47, 53, 47, 0.28);
       }}
+      .station-marker-anchor {{
+        background: transparent;
+        border: 0;
+      }}
+      .station-symbol {{
+        align-items: center;
+        background: {STATION_FILL};
+        border: 1px solid rgba(255, 255, 255, 0.9);
+        box-sizing: border-box;
+        color: #ffffff;
+        display: flex;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 8px;
+        font-weight: 700;
+        height: {STATION_ICON_SIZE}px;
+        justify-content: center;
+        line-height: 1;
+        width: {STATION_ICON_SIZE}px;
+      }}
+      .station-symbol-s {{
+        border-radius: 50%;
+      }}
+      .station-symbol-u {{
+        border-radius: 2px;
+      }}
       @media (max-width: 560px) {{
         .su-panel {{
           top: 14px;
@@ -423,14 +453,16 @@ def render_map(place, stations, walk_zones):
 
     station_layer = folium.FeatureGroup(name="S-Bahn and U-Bahn stations", show=True)
     for station in stations.itertuples():
-        folium.CircleMarker(
+        symbol = station_symbol(station.kind)
+        symbol_class = "station-symbol-s" if symbol == "S" else "station-symbol-u"
+        folium.Marker(
             location=[station.geometry.y, station.geometry.x],
-            radius=3.8,
-            color="#FFFFFF",
-            weight=1.2,
-            fill=True,
-            fill_color=STATION_FILL,
-            fill_opacity=0.95,
+            icon=folium.DivIcon(
+                class_name="station-marker-anchor",
+                html=f'<div class="station-symbol {symbol_class}">{symbol}</div>',
+                icon_size=(STATION_ICON_SIZE, STATION_ICON_SIZE),
+                icon_anchor=(STATION_ICON_SIZE // 2, STATION_ICON_SIZE // 2),
+            ),
             tooltip=f"{station.kind}: {station.name}",
         ).add_to(station_layer)
     station_layer.add_to(map_object)
