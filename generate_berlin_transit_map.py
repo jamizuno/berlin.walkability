@@ -21,6 +21,14 @@ GRAPH_CACHE = Path("cache/berlin_walk_graph.graphml")
 WALK_LEVELS = [5, 10]
 WALK_SPEED_KMH = 4.5
 
+BASEMAP_NAME = "OSM Bright"
+BASEMAP_TILES = "https://tiles.stadiamaps.com/tiles/osm_bright/{z}/{x}/{y}{r}.png"
+BASEMAP_ATTRIBUTION = (
+    '&copy; <a href="https://stadiamaps.com/" target="_blank">Stadia Maps</a> '
+    '&copy; <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> '
+    '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>'
+)
+
 # Berlin is in UTM zone 33N. Buffering in a projected CRS keeps distances in m.
 METRIC_CRS = "EPSG:25833"
 NODE_BUFFER_METERS = 70
@@ -337,9 +345,16 @@ def render_map(place, stations, walk_zones):
     map_object = folium.Map(
         location=[centre.y, centre.x],
         zoom_start=11,
-        tiles="CartoDB positron",
+        tiles=None,
         control_scale=True,
     )
+    folium.TileLayer(
+        tiles=BASEMAP_TILES,
+        attr=BASEMAP_ATTRIBUTION,
+        name=BASEMAP_NAME,
+        max_zoom=20,
+        control=False,
+    ).add_to(map_object)
 
     for level in sorted(walk_zones, reverse=True):
         color = WALK_COLORS[level]
