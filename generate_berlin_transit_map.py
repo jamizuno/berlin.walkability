@@ -6,6 +6,7 @@ import geopandas as gpd
 import networkx as nx
 import osmnx as ox
 import pandas as pd
+from shapely.geometry import LineString
 from shapely.ops import unary_union
 
 
@@ -26,6 +27,8 @@ BASEMAP_NAME = "OpenStreetMap"
 # Berlin is in UTM zone 33N. Buffering in a projected CRS keeps distances in m.
 METRIC_CRS = "EPSG:25833"
 NODE_BUFFER_METERS = 70
+EDGE_BUFFER_METERS = 35
+STATION_ACCESS_BUFFER_METERS = 90
 SIMPLIFY_TOLERANCE_METERS = 18
 
 STATION_TAGS = {
@@ -210,6 +213,16 @@ def load_walk_graph(place):
     return graph
 
 
+def graph_edge_geometry(graph, u, v, data):
+    geometry = data.get("geometry")
+    if geometry is not None:
+        return geometry
+
+    start = graph.nodes[u]
+    end = graph.nodes[v]
+    return LineString([(start["x"], start["y"]), (end["x"], end["y"])])
+
+
 def build_walk_zones(graph, stations, walk_levels):
     max_walk_minutes = max(walk_levels)
     log(f"Computing {', '.join(str(level) for level in walk_levels)}-minute walking reachability...")
@@ -239,20 +252,43 @@ def build_walk_zones(graph, stations, walk_levels):
     reached_nodes["travel_time"] = reached_nodes.index.map(travel_times)
     reached_buffers = reached_nodes.to_crs(METRIC_CRS)
     reached_buffers["geometry"] = reached_buffers.geometry.buffer(NODE_BUFFER_METERS)
+    station_buffers = gpd.GeoSeries(
+        stations.geometry,
+        crs="EPSG:4326",
+    ).to_crs(METRIC_CRS).buffer(STATION_ACCESS_BUFFER_METERS)
 
     zones = {}
     for level in sorted(walk_levels):
+        max_seconds = level * 60
         selected = reached_buffers[reached_buffers["travel_time"] <= level * 60]
         if selected.empty:
             raise RuntimeError(f"No reachable walking-network nodes were found for {level} minutes.")
 
         log(f"Building {level}-minute walking polygon from {len(selected)} network nodes")
-        zone = unary_union(selected.geometry)
+        selected_node_ids = set(selected.index)
+        edge_geometries = [
+            graph_edge_geometry(graph, u, v, data)
+            for u, v, _, data in graph.edges(keys=True, data=True)
+            if u in selected_node_ids
+            and v in selected_node_ids
+            and travel_times.get(u, float("inf")) <= max_seconds
+            and travel_times.get(v, float("inf")) <= max_seconds
+        ]
+        edge_buffers = gpd.GeoSeries(
+            edge_geometries,
+            crs="EPSG:4326",
+        ).to_crs(METRIC_CRS).buffer(EDGE_BUFFER_METERS)
+        zone = unary_union(
+            list(selected.geometry)
+            + list(edge_buffers)
+            + list(station_buffers)
+        )
 
         if not zone.is_valid:
             zone = zone.buffer(0)
 
         zone = zone.simplify(SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
+        zone = unary_union([zone] + list(station_buffers))
         zones[level] = gpd.GeoSeries([zone], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
 
     return zones
