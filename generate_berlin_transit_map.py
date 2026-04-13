@@ -33,10 +33,10 @@ STATION_TAGS = {
 }
 
 WALK_COLORS = {
-    5: "#dcf1e3",
-    10: "#b3efcf",
+    5: "#7fa77c",
+    10: "#dce7db",
 }
-STATION_FILL = "#2D2440"
+STATION_FILL = "#2f352f"
 # -----------------------------------------------------------------------------
 
 
@@ -255,16 +255,16 @@ def add_map_panel(map_object, station_count):
         z-index: 1000;
         width: 340px;
         max-width: calc(100vw - 56px);
-        background: rgba(255, 255, 255, 0.94);
-        border: 1px solid rgba(45, 28, 67, 0.16);
+        background: rgba(246, 247, 241, 0.94);
+        border: 1px solid rgba(47, 53, 47, 0.16);
         border-radius: 6px;
-        box-shadow: 0 16px 45px rgba(43, 31, 64, 0.18);
-        color: #2D2440;
+        box-shadow: 0 16px 45px rgba(47, 53, 47, 0.16);
+        color: #262824;
         font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         padding: 16px 18px;
       }}
       .su-kicker {{
-        color: #6D5B82;
+        color: #667064;
         font-size: 12px;
         font-weight: 700;
         letter-spacing: 0;
@@ -278,7 +278,7 @@ def add_map_panel(map_object, station_count):
         margin-bottom: 10px;
       }}
       .su-meta {{
-        color: #62586F;
+        color: #5f665d;
         font-size: 13px;
         line-height: 1.45;
       }}
@@ -297,7 +297,7 @@ def add_map_panel(map_object, station_count):
         height: 14px;
         margin-right: 7px;
         vertical-align: -2px;
-        border: 1px solid rgba(45, 36, 64, 0.28);
+        border: 1px solid rgba(47, 53, 47, 0.28);
       }}
       @media (max-width: 560px) {{
         .su-panel {{
