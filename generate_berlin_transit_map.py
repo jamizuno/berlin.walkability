@@ -35,10 +35,11 @@ STATION_TAGS = {
 }
 
 WALK_COLORS = {
-    5: "#7fa77c",
-    10: "#dce7db",
+    5: "#f075c3",
+    10: "#ae54c4",
 }
-STATION_FILL = "#2f352f"
+WALK_OPACITY = 0.5
+STATION_FILL = "#313873"
 # -----------------------------------------------------------------------------
 
 
@@ -356,8 +357,8 @@ def render_map(place, stations, walk_zones):
                 "fillColor": c,
                 "color": c,
                 "weight": 2,
-                "fillOpacity": 0.62,
-                "opacity": 0.95,
+                "fillOpacity": WALK_OPACITY,
+                "opacity": WALK_OPACITY,
             },
             tooltip=f"{level} min walk to S-Bahn or U-Bahn",
         ).add_to(map_object)
