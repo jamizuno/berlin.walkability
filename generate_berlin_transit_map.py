@@ -16,8 +16,9 @@ ox.settings.cache_folder = "cache/osmnx"
 # -- SETTINGS -----------------------------------------------------------------
 PLACE = "Berlin, Germany"
 OUTPUT_HTML = Path("index.html")
+GRAPH_CACHE = Path("cache/berlin_walk_graph.graphml")
 
-WALK_MINUTES = 5
+WALK_LEVELS = [5, 10]
 WALK_SPEED_KMH = 4.5
 
 # Berlin is in UTM zone 33N. Buffering in a projected CRS keeps distances in m.
@@ -31,9 +32,11 @@ STATION_TAGS = {
     "subway": "yes",
 }
 
-ZONE_FILL = "#7E4CC2"
-ZONE_STROKE = "#5B2F95"
-STATION_FILL = "#4F238A"
+WALK_COLORS = {
+    5: "#dcf1e3",
+    10: "#b3efcf",
+}
+STATION_FILL = "#2D2440"
 # -----------------------------------------------------------------------------
 
 
@@ -177,13 +180,27 @@ def fetch_su_stations(place):
 def add_walk_travel_times(graph, walk_speed_kmh):
     meters_per_second = walk_speed_kmh * 1000 / 3600
     for _, _, _, data in graph.edges(keys=True, data=True):
-        data["travel_time"] = data.get("length", 0) / meters_per_second
+        data["travel_time"] = float(data.get("length", 0) or 0) / meters_per_second
     return graph
 
 
-def build_walk_zone(graph, stations, walk_minutes):
-    log(f"Computing {walk_minutes}-minute walking reachability...")
-    max_seconds = walk_minutes * 60
+def load_walk_graph(place):
+    if GRAPH_CACHE.exists():
+        log(f"Loading cached walking network from {GRAPH_CACHE}...")
+        return ox.load_graphml(str(GRAPH_CACHE))
+
+    log("Downloading Berlin walking network. The first Berlin-wide run can take a while...")
+    graph = ox.graph_from_place(place, network_type="walk", simplify=True)
+    graph = add_walk_travel_times(graph, WALK_SPEED_KMH)
+    GRAPH_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    ox.save_graphml(graph, filepath=str(GRAPH_CACHE))
+    return graph
+
+
+def build_walk_zones(graph, stations, walk_levels):
+    max_walk_minutes = max(walk_levels)
+    log(f"Computing {', '.join(str(level) for level in walk_levels)}-minute walking reachability...")
+    max_seconds = max_walk_minutes * 60
 
     nearest_nodes = ox.distance.nearest_nodes(
         graph,
@@ -201,21 +218,31 @@ def build_walk_zone(graph, stations, walk_minutes):
         cutoff=max_seconds,
         weight="travel_time",
     )
-    reached_node_ids = set(travel_times)
-
-    if not reached_node_ids:
+    if not travel_times:
         raise RuntimeError("No reachable walking-network nodes were found.")
 
     nodes = ox.graph_to_gdfs(graph, edges=False)
-    reached_nodes = nodes.loc[list(reached_node_ids)]
-    reached_buffers = reached_nodes.to_crs(METRIC_CRS).buffer(NODE_BUFFER_METERS)
-    zone = unary_union(reached_buffers)
+    reached_nodes = nodes.loc[list(travel_times)].copy()
+    reached_nodes["travel_time"] = reached_nodes.index.map(travel_times)
+    reached_buffers = reached_nodes.to_crs(METRIC_CRS)
+    reached_buffers["geometry"] = reached_buffers.geometry.buffer(NODE_BUFFER_METERS)
 
-    if not zone.is_valid:
-        zone = zone.buffer(0)
+    zones = {}
+    for level in sorted(walk_levels):
+        selected = reached_buffers[reached_buffers["travel_time"] <= level * 60]
+        if selected.empty:
+            raise RuntimeError(f"No reachable walking-network nodes were found for {level} minutes.")
 
-    zone = zone.simplify(SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
-    return gpd.GeoSeries([zone], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+        log(f"Building {level}-minute walking polygon from {len(selected)} network nodes")
+        zone = unary_union(selected.geometry)
+
+        if not zone.is_valid:
+            zone = zone.buffer(0)
+
+        zone = zone.simplify(SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
+        zones[level] = gpd.GeoSeries([zone], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+
+    return zones
 
 
 def add_map_panel(map_object, station_count):
@@ -255,14 +282,22 @@ def add_map_panel(map_object, station_count):
         font-size: 13px;
         line-height: 1.45;
       }}
+      .su-legend {{
+        display: grid;
+        gap: 6px;
+        margin-bottom: 10px;
+      }}
+      .su-legend-row {{
+        align-items: center;
+        display: flex;
+      }}
       .su-swatch {{
         display: inline-block;
         width: 14px;
         height: 14px;
         margin-right: 7px;
         vertical-align: -2px;
-        background: {ZONE_FILL};
-        border: 1px solid {ZONE_STROKE};
+        border: 1px solid rgba(45, 36, 64, 0.28);
       }}
       @media (max-width: 560px) {{
         .su-panel {{
@@ -278,17 +313,24 @@ def add_map_panel(map_object, station_count):
     </style>
     <div class="su-panel">
       <div class="su-kicker">Berlin rapid transit</div>
-      <div class="su-title">{WALK_MINUTES} min walk to S-Bahn or U-Bahn</div>
+      <div class="su-title">5 and 10 min walk to S-Bahn or U-Bahn</div>
+      <div class="su-legend">
+        <div class="su-legend-row">
+          <span class="su-swatch" style="background:{WALK_COLORS[5]}"></span>5-minute walk
+        </div>
+        <div class="su-legend-row">
+          <span class="su-swatch" style="background:{WALK_COLORS[10]}"></span>10-minute walk
+        </div>
+      </div>
       <div class="su-meta">
-        <span class="su-swatch"></span>{station_count} station origins.
-        Trams excluded. Walking speed: {WALK_SPEED_KMH:g} km/h.
+        {station_count} station origins. Trams excluded. Walking speed: {WALK_SPEED_KMH:g} km/h.
       </div>
     </div>
     """
     map_object.get_root().html.add_child(folium.Element(panel_html))
 
 
-def render_map(place, stations, walk_zone):
+def render_map(place, stations, walk_zones):
     log("Rendering Folium map...")
     place_boundary = ox.geocode_to_gdf(place).to_crs("EPSG:4326")
     centre = place_boundary.geometry.unary_union.centroid
@@ -299,22 +341,24 @@ def render_map(place, stations, walk_zone):
         control_scale=True,
     )
 
-    folium.GeoJson(
-        gpd.GeoDataFrame(
-            {"minutes": [WALK_MINUTES], "mode": ["walk"]},
-            geometry=[walk_zone],
-            crs="EPSG:4326",
-        ).__geo_interface__,
-        name=f"{WALK_MINUTES} min walk from S-Bahn/U-Bahn",
-        style_function=lambda _: {
-            "fillColor": ZONE_FILL,
-            "color": ZONE_STROKE,
-            "weight": 2,
-            "fillOpacity": 0.34,
-            "opacity": 0.92,
-        },
-        tooltip=f"{WALK_MINUTES} min walk to S-Bahn or U-Bahn",
-    ).add_to(map_object)
+    for level in sorted(walk_zones, reverse=True):
+        color = WALK_COLORS[level]
+        folium.GeoJson(
+            gpd.GeoDataFrame(
+                {"minutes": [level], "mode": ["walk"]},
+                geometry=[walk_zones[level]],
+                crs="EPSG:4326",
+            ).__geo_interface__,
+            name=f"{level} min walk from S-Bahn/U-Bahn",
+            style_function=lambda _, c=color: {
+                "fillColor": c,
+                "color": c,
+                "weight": 2,
+                "fillOpacity": 0.62,
+                "opacity": 0.95,
+            },
+            tooltip=f"{level} min walk to S-Bahn or U-Bahn",
+        ).add_to(map_object)
 
     station_layer = folium.FeatureGroup(name="S-Bahn and U-Bahn stations", show=True)
     for station in stations.itertuples():
@@ -342,12 +386,11 @@ def run_analysis(place=PLACE):
     if stations.empty:
         raise RuntimeError("No S-Bahn or U-Bahn stations found.")
 
-    log("Downloading Berlin walking network. The first Berlin-wide run can take a while...")
-    graph = ox.graph_from_place(place, network_type="walk", simplify=True)
+    graph = load_walk_graph(place)
     graph = add_walk_travel_times(graph, WALK_SPEED_KMH)
 
-    walk_zone = build_walk_zone(graph, stations, WALK_MINUTES)
-    render_map(place, stations, walk_zone)
+    walk_zones = build_walk_zones(graph, stations, WALK_LEVELS)
+    render_map(place, stations, walk_zones)
 
 
 if __name__ == "__main__":
