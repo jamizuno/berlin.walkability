@@ -1,4 +1,4 @@
-import json
+import io
 import warnings
 from pathlib import Path
 
@@ -20,22 +20,26 @@ ox.settings.cache_folder = "cache/osmnx"
 PLACE = "Berlin, Germany"
 OUTPUT_HTML = Path("index.html")
 GRAPH_CACHE = Path("cache/berlin_walk_graph.graphml")
-TRAM_LINES_CACHE = Path("cache/tram_lines.geojson")
+TRAM_STOPS_CACHE = Path("cache/tram_stops.geojson")
 
 WALK_LEVELS = [5, 10]
 WALK_SPEED_KMH = 4.5
 
-BASEMAP_NAME = "OpenStreetMap"
-TRAM_LINES_WFS_URL = (
+BASEMAPS = [
+    ("OpenStreetMap",     "OpenStreetMap"),
+    ("CartoDB positron",  "CartoDB Positron"),
+    ("CartoDB dark_matter", "CartoDB Dark Matter"),
+]
+TRAM_STOPS_WFS_URL = (
     "https://gdi.berlin.de/services/wfs/oepnv_ungestoert"
     "?SERVICE=WFS"
     "&VERSION=2.0.0"
     "&REQUEST=GetFeature"
-    "&TYPENAMES=oepnv_ungestoert:d_tramlinien"
+    "&TYPENAMES=oepnv_ungestoert:b_tramstopp"
     "&OUTPUTFORMAT=application/json"
     "&SRSNAME=EPSG:4326"
 )
-TRAM_LAYER_NAME = "Straßenbahnlinien (ungestörtes Netz)"
+TRAM_WALK_MINUTES = 3
 
 # Berlin is in UTM zone 33N. Buffering in a projected CRS keeps distances in m.
 METRIC_CRS = "EPSG:25833"
@@ -62,6 +66,12 @@ EDGE_DIFFUSION_METERS = {
 EDGE_FEATHER_OPACITIES = [0.18, 0.12, 0.07, 0.035]
 STATION_FILL = "#313873"
 STATION_ICON_SIZE = 12
+
+TRAM_WALK_COLOR = "#f0a830"
+TRAM_WALK_OPACITY = 0.35
+TRAM_EDGE_DIFFUSION_METERS = 40
+TRAM_STOP_FILL = "#b85c0a"
+TRAM_STOP_ICON_SIZE = 9
 # -----------------------------------------------------------------------------
 
 
@@ -236,21 +246,28 @@ def graph_edge_geometry(graph, u, v, data):
     return LineString([(start["x"], start["y"]), (end["x"], end["y"])])
 
 
-def load_tram_lines():
-    if TRAM_LINES_CACHE.exists():
-        log(f"Loading cached tram lines from {TRAM_LINES_CACHE}...")
-        return json.loads(TRAM_LINES_CACHE.read_text(encoding="utf-8"))
+def load_tram_stops():
+    if TRAM_STOPS_CACHE.exists():
+        log(f"Loading cached tram stops from {TRAM_STOPS_CACHE}...")
+        return gpd.read_file(TRAM_STOPS_CACHE)
 
-    log("Downloading tram lines from Berlin WFS...")
-    response = requests.get(TRAM_LINES_WFS_URL, timeout=60)
+    log("Downloading tram stops from Berlin WFS...")
+    response = requests.get(TRAM_STOPS_WFS_URL, timeout=60)
     response.raise_for_status()
-    tram_geojson = response.json()
-    TRAM_LINES_CACHE.parent.mkdir(parents=True, exist_ok=True)
-    TRAM_LINES_CACHE.write_text(
-        json.dumps(tram_geojson, ensure_ascii=False),
-        encoding="utf-8",
+    gdf = gpd.read_file(io.StringIO(response.text))
+    gdf = gdf[gdf.geometry.notna()].copy()
+    gdf = gdf.to_crs("EPSG:4326")
+    gdf["geometry"] = gdf.geometry.apply(
+        lambda g: g if g.geom_type == "Point" else g.centroid
     )
-    return tram_geojson
+    # Normalise stop name — column may be 'name', 'bezeichnung', or similar
+    name_col = next((c for c in gdf.columns if c.lower() in ("name", "bezeichnung", "hst_name")), None)
+    gdf["name"] = gdf[name_col].fillna("Tram stop").astype(str) if name_col else "Tram stop"
+    gdf = gdf[["name", "geometry"]]
+    TRAM_STOPS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    gdf.to_file(str(TRAM_STOPS_CACHE), driver="GeoJSON")
+    log(f"Found {len(gdf)} tram stops")
+    return gdf
 
 
 def build_walk_zones(graph, stations, walk_levels):
@@ -350,7 +367,7 @@ def build_edge_feathers(geometry, spread_meters):
     return feather_geometries
 
 
-def add_map_panel(map_object, station_count):
+def add_map_panel(map_object, station_count, tram_stop_count):
     panel_html = f"""
     <style>
       .su-panel {{
@@ -429,6 +446,13 @@ def add_map_panel(map_object, station_count):
       .station-symbol-u {{
         border-radius: 2px;
       }}
+      .station-symbol-t {{
+        background: {TRAM_STOP_FILL};
+        border-radius: 50%;
+        font-size: 7px;
+        height: {TRAM_STOP_ICON_SIZE}px;
+        width: {TRAM_STOP_ICON_SIZE}px;
+      }}
       @media (max-width: 560px) {{
         .su-panel {{
           top: 14px;
@@ -442,34 +466,43 @@ def add_map_panel(map_object, station_count):
       }}
     </style>
     <div class="su-panel">
-      <div class="su-kicker">Berlin rapid transit</div>
-      <div class="su-title">5 and 10 min walk to S-Bahn or U-Bahn</div>
+      <div class="su-kicker">Berlin transit walkability</div>
+      <div class="su-title">Walk distance to S-Bahn, U-Bahn &amp; Tram</div>
       <div class="su-legend">
         <div class="su-legend-row">
-          <span class="su-swatch" style="background:{WALK_COLORS[5]}"></span>5-minute walk
+          <span class="su-swatch" style="background:{WALK_COLORS[5]}"></span>5 min walk · S/U-Bahn
         </div>
         <div class="su-legend-row">
-          <span class="su-swatch" style="background:{WALK_COLORS[10]}"></span>10-minute walk
+          <span class="su-swatch" style="background:{WALK_COLORS[10]}"></span>10 min walk · S/U-Bahn
+        </div>
+        <div class="su-legend-row">
+          <span class="su-swatch" style="background:{TRAM_WALK_COLOR}"></span>3 min walk · Tram
         </div>
       </div>
       <div class="su-meta">
-        {station_count} station origins. Trams excluded. Walking speed: {WALK_SPEED_KMH:g} km/h.
+        {station_count} S/U-Bahn stations · {tram_stop_count} tram stops. Walking speed: {WALK_SPEED_KMH:g} km/h.
       </div>
     </div>
     """
     map_object.get_root().html.add_child(folium.Element(panel_html))
 
 
-def render_map(place, stations, walk_zones, tram_geojson):
+def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones):
     log("Rendering Folium map...")
     place_boundary = ox.geocode_to_gdf(place).to_crs("EPSG:4326")
     centre = place_boundary.geometry.unary_union.centroid
     map_object = folium.Map(
         location=[centre.y, centre.x],
         zoom_start=11,
-        tiles=BASEMAP_NAME,
+        tiles=None,
         control_scale=True,
     )
+    for i, (tiles, label) in enumerate(BASEMAPS):
+        folium.TileLayer(
+            tiles=tiles,
+            name=label,
+            show=(i == 0),
+        ).add_to(map_object)
 
     for level in sorted(walk_zones, reverse=True):
         color = WALK_COLORS[level]
@@ -517,20 +550,62 @@ def render_map(place, stations, walk_zones, tram_geojson):
         ).add_to(zone_layer)
         zone_layer.add_to(map_object)
 
+    tram_zone_layer = folium.FeatureGroup(
+        name=f"{TRAM_WALK_MINUTES} min walk from Tram",
+        show=True,
+    )
+    tram_zone = tram_walk_zones[TRAM_WALK_MINUTES]
+    for feather_geometry, feather_opacity in reversed(
+        list(zip(build_edge_feathers(tram_zone, TRAM_EDGE_DIFFUSION_METERS), EDGE_FEATHER_OPACITIES))
+    ):
+        folium.GeoJson(
+            gpd.GeoDataFrame(
+                {"minutes": [TRAM_WALK_MINUTES], "mode": ["edge feather"]},
+                geometry=[feather_geometry],
+                crs="EPSG:4326",
+            ).__geo_interface__,
+            name=f"{TRAM_WALK_MINUTES} min tram soft edge",
+            control=False,
+            style_function=lambda _, c=TRAM_WALK_COLOR, o=feather_opacity: {
+                "fillColor": c,
+                "color": c,
+                "weight": 0,
+                "fillOpacity": o,
+                "opacity": 0,
+            },
+        ).add_to(tram_zone_layer)
     folium.GeoJson(
-        tram_geojson,
-        name=TRAM_LAYER_NAME,
+        gpd.GeoDataFrame(
+            {"minutes": [TRAM_WALK_MINUTES], "mode": ["walk"]},
+            geometry=[tram_zone],
+            crs="EPSG:4326",
+        ).__geo_interface__,
+        name=f"{TRAM_WALK_MINUTES} min tram walk area",
+        control=False,
         style_function=lambda _: {
-            "color": WALK_COLORS[10],
-            "weight": 2.5,
-            "opacity": 1.0,
+            "fillColor": TRAM_WALK_COLOR,
+            "color": TRAM_WALK_COLOR,
+            "weight": 0,
+            "fillOpacity": TRAM_WALK_OPACITY,
+            "opacity": 0,
         },
-        tooltip=folium.GeoJsonTooltip(
-            fields=["linename"],
-            aliases=["Tram"],
-            sticky=False,
-        ),
-    ).add_to(map_object)
+        tooltip=f"{TRAM_WALK_MINUTES} min walk to Tram",
+    ).add_to(tram_zone_layer)
+    tram_zone_layer.add_to(map_object)
+
+    tram_stop_layer = folium.FeatureGroup(name="Tram stops", show=True)
+    for stop in tram_stops.itertuples():
+        folium.Marker(
+            location=[stop.geometry.y, stop.geometry.x],
+            icon=folium.DivIcon(
+                class_name="station-marker-anchor",
+                html=f'<div class="station-symbol station-symbol-t">T</div>',
+                icon_size=(TRAM_STOP_ICON_SIZE, TRAM_STOP_ICON_SIZE),
+                icon_anchor=(TRAM_STOP_ICON_SIZE // 2, TRAM_STOP_ICON_SIZE // 2),
+            ),
+            tooltip=f"Tram: {stop.name}",
+        ).add_to(tram_stop_layer)
+    tram_stop_layer.add_to(map_object)
 
     station_layer = folium.FeatureGroup(name="S-Bahn and U-Bahn stations", show=True)
     for station in stations.itertuples():
@@ -549,7 +624,7 @@ def render_map(place, stations, walk_zones, tram_geojson):
     station_layer.add_to(map_object)
 
     folium.LayerControl(collapsed=False).add_to(map_object)
-    add_map_panel(map_object, len(stations))
+    add_map_panel(map_object, len(stations), len(tram_stops))
     map_object.save(str(OUTPUT_HTML))
     log(f"Saved map to: {OUTPUT_HTML}")
 
@@ -564,8 +639,11 @@ def run_analysis(place=PLACE):
     graph = add_walk_travel_times(graph, WALK_SPEED_KMH)
 
     walk_zones = build_walk_zones(graph, stations, WALK_LEVELS)
-    tram_geojson = load_tram_lines()
-    render_map(place, stations, walk_zones, tram_geojson)
+    tram_stops = load_tram_stops()
+    if tram_stops.empty:
+        raise RuntimeError("No tram stops found.")
+    tram_walk_zones = build_walk_zones(graph, tram_stops, [TRAM_WALK_MINUTES])
+    render_map(place, stations, walk_zones, tram_stops, tram_walk_zones)
 
 
 if __name__ == "__main__":
