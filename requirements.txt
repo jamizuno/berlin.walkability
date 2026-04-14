@@ -3,5 +3,6 @@ geopandas
 networkx
 osmnx
 pandas
+requests
 scikit-learn
 shapely

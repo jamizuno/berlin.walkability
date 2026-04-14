@@ -1,3 +1,4 @@
+import json
 import warnings
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import geopandas as gpd
 import networkx as nx
 import osmnx as ox
 import pandas as pd
+import requests
 from shapely.geometry import LineString
 from shapely.ops import unary_union
 
@@ -18,11 +20,22 @@ ox.settings.cache_folder = "cache/osmnx"
 PLACE = "Berlin, Germany"
 OUTPUT_HTML = Path("index.html")
 GRAPH_CACHE = Path("cache/berlin_walk_graph.graphml")
+TRAM_LINES_CACHE = Path("cache/tram_lines.geojson")
 
 WALK_LEVELS = [5, 10]
 WALK_SPEED_KMH = 4.5
 
 BASEMAP_NAME = "OpenStreetMap"
+TRAM_LINES_WFS_URL = (
+    "https://gdi.berlin.de/services/wfs/oepnv_ungestoert"
+    "?SERVICE=WFS"
+    "&VERSION=2.0.0"
+    "&REQUEST=GetFeature"
+    "&TYPENAMES=oepnv_ungestoert:d_tramlinien"
+    "&OUTPUTFORMAT=application/json"
+    "&SRSNAME=EPSG:4326"
+)
+TRAM_LAYER_NAME = "Straßenbahnlinien (ungestörtes Netz)"
 
 # Berlin is in UTM zone 33N. Buffering in a projected CRS keeps distances in m.
 METRIC_CRS = "EPSG:25833"
@@ -221,6 +234,23 @@ def graph_edge_geometry(graph, u, v, data):
     start = graph.nodes[u]
     end = graph.nodes[v]
     return LineString([(start["x"], start["y"]), (end["x"], end["y"])])
+
+
+def load_tram_lines():
+    if TRAM_LINES_CACHE.exists():
+        log(f"Loading cached tram lines from {TRAM_LINES_CACHE}...")
+        return json.loads(TRAM_LINES_CACHE.read_text(encoding="utf-8"))
+
+    log("Downloading tram lines from Berlin WFS...")
+    response = requests.get(TRAM_LINES_WFS_URL, timeout=60)
+    response.raise_for_status()
+    tram_geojson = response.json()
+    TRAM_LINES_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    TRAM_LINES_CACHE.write_text(
+        json.dumps(tram_geojson, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return tram_geojson
 
 
 def build_walk_zones(graph, stations, walk_levels):
@@ -430,7 +460,7 @@ def add_map_panel(map_object, station_count):
     map_object.get_root().html.add_child(folium.Element(panel_html))
 
 
-def render_map(place, stations, walk_zones):
+def render_map(place, stations, walk_zones, tram_geojson):
     log("Rendering Folium map...")
     place_boundary = ox.geocode_to_gdf(place).to_crs("EPSG:4326")
     centre = place_boundary.geometry.unary_union.centroid
@@ -487,6 +517,21 @@ def render_map(place, stations, walk_zones):
         ).add_to(zone_layer)
         zone_layer.add_to(map_object)
 
+    folium.GeoJson(
+        tram_geojson,
+        name=TRAM_LAYER_NAME,
+        style_function=lambda _: {
+            "color": WALK_COLORS[10],
+            "weight": 2.5,
+            "opacity": 1.0,
+        },
+        tooltip=folium.GeoJsonTooltip(
+            fields=["linename"],
+            aliases=["Tram"],
+            sticky=False,
+        ),
+    ).add_to(map_object)
+
     station_layer = folium.FeatureGroup(name="S-Bahn and U-Bahn stations", show=True)
     for station in stations.itertuples():
         symbol = station_symbol(station.kind)
@@ -519,7 +564,8 @@ def run_analysis(place=PLACE):
     graph = add_walk_travel_times(graph, WALK_SPEED_KMH)
 
     walk_zones = build_walk_zones(graph, stations, WALK_LEVELS)
-    render_map(place, stations, walk_zones)
+    tram_geojson = load_tram_lines()
+    render_map(place, stations, walk_zones, tram_geojson)
 
 
 if __name__ == "__main__":
