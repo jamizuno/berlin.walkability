@@ -25,11 +25,21 @@ TRAM_STOPS_CACHE = Path("cache/tram_stops.geojson")
 WALK_LEVELS = [5, 10]
 WALK_SPEED_KMH = 4.5
 
+BASEMAPDE_TILE_URL = (
+    "https://sgx.geodatenzentrum.de/wmts_basemapde/tile/1.0.0/"
+    "de_basemapde_web_raster_farbe/default/GLOBAL_WEBMERCATOR/{z}/{y}/{x}.png"
+)
+BASEMAPDE_ATTRIBUTION = "© GeoBasis-DE / BKG, CC BY 4.0"
 BASEMAPS = [
-    ("OpenStreetMap",     "OpenStreetMap"),
-    ("CartoDB positron",  "CartoDB Positron"),
-    ("CartoDB dark_matter", "CartoDB Dark Matter"),
+    (BASEMAPDE_TILE_URL, "basemap.de Web Raster Farbe", BASEMAPDE_ATTRIBUTION),
+    ("OpenStreetMap", "OpenStreetMap", None),
+    ("CartoDB positron", "CartoDB Positron", None),
+    ("CartoDB dark_matter", "CartoDB Dark Matter", None),
 ]
+ENVIRONMENTAL_JUSTICE_WMS_URL = "https://gdi.berlin.de/services/wms/ua_umweltgerechtigkeit2023"
+ENVIRONMENTAL_JUSTICE_LAYER = "z_gesamt_umwelt2023"
+ENVIRONMENTAL_JUSTICE_LAYER_NAME = "Umweltgerechtigkeit 2023/2024"
+ENVIRONMENTAL_JUSTICE_OPACITY = 0.5
 TRAM_STOPS_WFS_URL = (
     "https://gdi.berlin.de/services/wfs/oepnv_ungestoert"
     "?SERVICE=WFS"
@@ -67,10 +77,10 @@ EDGE_FEATHER_OPACITIES = [0.18, 0.12, 0.07, 0.035]
 STATION_FILL = "#313873"
 STATION_ICON_SIZE = 12
 
-TRAM_WALK_COLOR = "#f0a830"
-TRAM_WALK_OPACITY = 0.35
-TRAM_EDGE_DIFFUSION_METERS = 40
-TRAM_STOP_FILL = "#b85c0a"
+TRAM_WALK_COLOR = "#d4a0dc"
+TRAM_WALK_OPACITY = 0.65
+TRAM_EDGE_DIFFUSION_METERS = 80
+TRAM_STOP_FILL = "#a870c0"
 TRAM_STOP_ICON_SIZE = 9
 # -----------------------------------------------------------------------------
 
@@ -497,12 +507,31 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones):
         tiles=None,
         control_scale=True,
     )
-    for i, (tiles, label) in enumerate(BASEMAPS):
+    for i, (tiles, label, attribution) in enumerate(BASEMAPS):
+        tile_options = {
+            "tiles": tiles,
+            "name": label,
+            "show": (i == 0),
+        }
+        if attribution:
+            tile_options["attr"] = attribution
+            tile_options["max_zoom"] = 19
         folium.TileLayer(
-            tiles=tiles,
-            name=label,
-            show=(i == 0),
+            **tile_options,
         ).add_to(map_object)
+    folium.raster_layers.WmsTileLayer(
+        url=ENVIRONMENTAL_JUSTICE_WMS_URL,
+        layers=ENVIRONMENTAL_JUSTICE_LAYER,
+        name=ENVIRONMENTAL_JUSTICE_LAYER_NAME,
+        fmt="image/png",
+        transparent=True,
+        version="1.3.0",
+        attr="Umweltatlas Berlin / Geoportal Berlin, Datenlizenz Deutschland Zero 2.0",
+        overlay=True,
+        control=True,
+        show=False,
+        opacity=ENVIRONMENTAL_JUSTICE_OPACITY,
+    ).add_to(map_object)
 
     for level in sorted(walk_zones, reverse=True):
         color = WALK_COLORS[level]
@@ -593,7 +622,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones):
     ).add_to(tram_zone_layer)
     tram_zone_layer.add_to(map_object)
 
-    tram_stop_layer = folium.FeatureGroup(name="Tram stops", show=True)
+    tram_stop_layer = folium.FeatureGroup(name="Tram stops", show=False)
     for stop in tram_stops.itertuples():
         folium.Marker(
             location=[stop.geometry.y, stop.geometry.x],
@@ -607,7 +636,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones):
         ).add_to(tram_stop_layer)
     tram_stop_layer.add_to(map_object)
 
-    station_layer = folium.FeatureGroup(name="S-Bahn and U-Bahn stations", show=True)
+    station_layer = folium.FeatureGroup(name="S-Bahn and U-Bahn stations", show=False)
     for station in stations.itertuples():
         symbol = station_symbol(station.kind)
         symbol_class = "station-symbol-s" if symbol == "S" else "station-symbol-u"
