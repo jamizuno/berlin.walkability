@@ -44,12 +44,12 @@ BASEMAPS = [
 ENVIRONMENTAL_JUSTICE_WMS_URL = "https://gdi.berlin.de/services/wms/ua_umweltgerechtigkeit2023"
 ENVIRONMENTAL_JUSTICE_LAYER = "z_gesamt_umwelt2023"
 ENVIRONMENTAL_JUSTICE_LAYER_NAME = "Umweltgerechtigkeit 2023/2024"
-ENVIRONMENTAL_JUSTICE_OPACITY = 0.5
+ENVIRONMENTAL_JUSTICE_OPACITY = 0.75
 
 WOHNLAGEN_WMS_URL = "https://gdi.berlin.de/services/wms/wohnlagenadr2024"
 WOHNLAGEN_LAYER = "wohnlagenadr2024"
 WOHNLAGEN_LAYER_NAME = "Mietspiegel 2024 (Wohnlagen)"
-WOHNLAGEN_OPACITY = 0.6
+WOHNLAGEN_OPACITY = 0.75
 TRAM_STOPS_WFS_URL = (
     "https://gdi.berlin.de/services/wfs/oepnv_ungestoert"
     "?SERVICE=WFS"
@@ -332,7 +332,7 @@ def fetch_stations_from_csv(search_terms):
             for row in reader:
                 if len(row) < 7: continue
                 name = row[0]
-                if row[2] != 'Bauwerk': continue
+                # if row[2] != 'Bauwerk': continue
                 
                 for term in search_terms:
                     if term.lower() in name.lower():
@@ -653,9 +653,40 @@ def build_edge_feathers(geometry, spread_meters):
         return []
 
 
-def assign_frequencies(stations, freq_df):
+def filter_lines_for_category(lines_str, category):
+    if not isinstance(lines_str, str) or not lines_str:
+        return ""
+        
+    valid_lines = set()
+    for item in lines_str.split(','):
+        if not item: continue
+        parts = item.split('|')
+        name = parts[0].strip()
+        rtype = parts[1].strip() if len(parts) > 1 else ""
+        
+        if category == "su":
+            if name.startswith('S') and name[1:].isdigit(): valid_lines.add(name)
+            elif name.startswith('U') and name[1:].isdigit(): valid_lines.add(name)
+            elif rtype in ('109', '400', '1'): valid_lines.add(name)
+        elif category == "tram":
+            if rtype in ('0', '900'): valid_lines.add(name)
+            elif name in ('M1', 'M2', 'M4', 'M5', 'M6', 'M8', 'M10', 'M13', 'M17'): valid_lines.add(name)
+            elif name.isdigit() and len(name) <= 2: valid_lines.add(name)
+        elif category == "regional":
+            if name.startswith(('RE', 'RB', 'FEX', 'HBX', 'IRE', 'IC', 'ICE')): valid_lines.add(name)
+            elif rtype in ('100', '101', '102'): valid_lines.add(name)
+            
+    import re
+    def natural_keys(text):
+        return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+        
+    return ', '.join(sorted(valid_lines, key=natural_keys))
+
+
+def assign_frequencies(stations, freq_df, category="su"):
     if freq_df is None or freq_df.empty or stations.empty:
         stations["departures"] = 0
+        stations["lines"] = ""
         return stations
 
     stations_metric = stations.to_crs(METRIC_CRS)
@@ -668,22 +699,29 @@ def assign_frequencies(stations, freq_df):
     tree = cKDTree(np.array(list(freq_gdf.geometry.apply(lambda p: (p.x, p.y)))))
     coords = np.array(list(stations_metric.geometry.apply(lambda p: (p.x, p.y))))
     
-    # Find GTFS stops within 200m and sum their daily departures
     idx = tree.query_ball_point(coords, r=200)
     
     departures = []
+    lines_list = []
     for i in idx:
         if i:
             deps = freq_gdf.iloc[i]['daily_departures'].sum()
             departures.append(deps)
+            if 'lines' in freq_gdf.columns:
+                all_lines_str = ','.join([str(l) for l in freq_gdf.iloc[i]['lines'].dropna()])
+                lines_list.append(filter_lines_for_category(all_lines_str, category))
+            else:
+                lines_list.append("")
         else:
             departures.append(0)
+            lines_list.append("")
             
     stations["departures"] = departures
+    stations["lines"] = lines_list
     return stations
 
 
-def build_frequency_overlays(stations_list):
+def build_frequency_overlays(stations_list, all_walk_zones=None):
     all_stats = pd.concat([s for s in stations_list if not s.empty], ignore_index=True)
     if all_stats.empty or "departures" not in all_stats.columns:
         return {}
@@ -691,15 +729,31 @@ def build_frequency_overlays(stations_list):
     all_stats = gpd.GeoDataFrame(all_stats, geometry="geometry", crs="EPSG:4326").to_crs(METRIC_CRS)
     overlays = {}
     
-    # Tier 1: High frequency (> 300 departures/day)
-    tier1 = all_stats[all_stats["departures"] > 300]
+    if all_walk_zones is not None and not all_walk_zones.is_empty:
+        if isinstance(all_walk_zones, gpd.GeoSeries):
+            all_walk_zones_metric = all_walk_zones.to_crs(METRIC_CRS).unary_union
+        else:
+            all_walk_zones_metric = gpd.GeoSeries([all_walk_zones], crs="EPSG:4326").to_crs(METRIC_CRS).unary_union
+    else:
+        all_walk_zones_metric = None
+    
+    # Tier 1: High frequency (> 1200 departures/day)
+    tier1 = all_stats[all_stats["departures"] > 1200]
     if not tier1.empty:
-        overlays['high'] = gpd.GeoSeries([unary_union(tier1.geometry.buffer(500)).simplify(15)], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+        geom = unary_union(tier1.geometry.buffer(250)).simplify(15)
+        if all_walk_zones_metric is not None and not all_walk_zones_metric.is_empty:
+            geom = geom.intersection(all_walk_zones_metric)
+        if not geom.is_empty:
+            overlays['high'] = gpd.GeoSeries([geom], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
         
-    # Tier 2: Medium frequency (100 - 300 departures/day)
-    tier2 = all_stats[(all_stats["departures"] > 100) & (all_stats["departures"] <= 300)]
+    # Tier 2: Medium frequency (400 - 1200 departures/day)
+    tier2 = all_stats[(all_stats["departures"] >= 400) & (all_stats["departures"] <= 1200)]
     if not tier2.empty:
-        overlays['medium'] = gpd.GeoSeries([unary_union(tier2.geometry.buffer(350)).simplify(15)], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+        geom = unary_union(tier2.geometry.buffer(175)).simplify(15)
+        if all_walk_zones_metric is not None and not all_walk_zones_metric.is_empty:
+            geom = geom.intersection(all_walk_zones_metric)
+        if not geom.is_empty:
+            overlays['medium'] = gpd.GeoSeries([geom], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
         
     return overlays
 
@@ -707,6 +761,9 @@ def build_frequency_overlays(stations_list):
 def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
     panel_html = f"""
     <style>
+      .freq-blend {{
+        mix-blend-mode: plus-lighter;
+      }}
       .su-panel {{
         position: fixed;
         top: 28px;
@@ -846,6 +903,9 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         tiles=None,
         control_scale=True,
     )
+    
+    # Create a custom pane specifically for frequency overlays to sit above walk zones (400) but below shadows/WMS (500)
+    folium.map.CustomPane("freq_pane", z_index=450, pointer_events=False).add_to(map_object)
     for i, (tiles, label, attribution) in enumerate(BASEMAPS):
         tile_options = {
             "tiles": tiles,
@@ -870,6 +930,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         control=True,
         show=False,
         opacity=ENVIRONMENTAL_JUSTICE_OPACITY,
+        pane="shadowPane",
     ).add_to(map_object)
 
     folium.raster_layers.WmsTileLayer(
@@ -884,6 +945,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         control=True,
         show=False,
         opacity=WOHNLAGEN_OPACITY,
+        pane="shadowPane",
     ).add_to(map_object)
 
     for level in sorted(walk_zones, reverse=True):
@@ -1022,40 +1084,53 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
     if frequency_overlays:
         freq_layer = folium.FeatureGroup(name="Connection Frequency Overlay", show=True)
         
-        # Draw Medium
+        def render_freq_tier(name, geom, base_opacity, feather_spread, tooltip):
+            # Render feathers
+            feathers = build_edge_feathers(geom, feather_spread)
+            num_feathers = len(feathers)
+            for i, feather_geometry in enumerate(reversed(feathers)):
+                f_opacity = base_opacity * (0.1 + 0.8 * (i / max(1, num_feathers - 1)))
+                folium.GeoJson(
+                    gpd.GeoDataFrame({"tier": [name]}, geometry=[feather_geometry], crs="EPSG:4326").__geo_interface__,
+                    name=f"{name} feather",
+                    control=False,
+                    style_function=lambda _, o=f_opacity: {
+                        "fillColor": FREQUENCY_COLOR,
+                        "color": "transparent",
+                        "weight": 0,
+                        "fillOpacity": o,
+                        "className": "freq-blend",
+                    },
+                    pane="freq_pane"
+                ).add_to(freq_layer)
+                
+            # Render core
+            folium.GeoJson(
+                gpd.GeoDataFrame({"tier": [name]}, geometry=[geom], crs="EPSG:4326").__geo_interface__,
+                name=name,
+                control=False,
+                style_function=lambda _: {
+                    "fillColor": FREQUENCY_COLOR,
+                    "color": "transparent",
+                    "weight": 0,
+                    "fillOpacity": base_opacity,
+                    "className": "freq-blend",
+                },
+                tooltip=tooltip,
+                pane="freq_pane"
+            ).add_to(freq_layer)
+
         if 'medium' in frequency_overlays:
-            folium.GeoJson(
-                gpd.GeoDataFrame({"tier": ["Medium Frequency"]}, geometry=[frequency_overlays['medium']], crs="EPSG:4326").__geo_interface__,
-                name="Medium Frequency",
-                control=False,
-                style_function=lambda _: {
-                    "fillColor": FREQUENCY_COLOR,
-                    "color": "transparent",
-                    "weight": 0,
-                    "fillOpacity": 0.08,
-                },
-                tooltip="Medium Frequency (100-300 departures/day)"
-            ).add_to(freq_layer)
+            render_freq_tier("Medium Frequency", frequency_overlays['medium'], 0.16, 175, "Medium Frequency (400-1200 departures/day)")
             
-        # Draw High
         if 'high' in frequency_overlays:
-            folium.GeoJson(
-                gpd.GeoDataFrame({"tier": ["High Frequency"]}, geometry=[frequency_overlays['high']], crs="EPSG:4326").__geo_interface__,
-                name="High Frequency",
-                control=False,
-                style_function=lambda _: {
-                    "fillColor": FREQUENCY_COLOR,
-                    "color": "transparent",
-                    "weight": 0,
-                    "fillOpacity": 0.16,
-                },
-                tooltip="High Frequency (>300 departures/day)"
-            ).add_to(freq_layer)
+            render_freq_tier("High Frequency", frequency_overlays['high'], 0.28, 250, "High Frequency (>1200 departures/day)")
             
         freq_layer.add_to(map_object)
 
     tram_stop_layer = folium.FeatureGroup(name="Tram stops", show=False)
     for stop in tram_stops.itertuples():
+        lines_text = f" ({stop.lines})" if getattr(stop, 'lines', '') else ""
         folium.Marker(
             location=[stop.geometry.y, stop.geometry.x],
             icon=folium.DivIcon(
@@ -1064,7 +1139,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
                 icon_size=(TRAM_STOP_ICON_SIZE, TRAM_STOP_ICON_SIZE),
                 icon_anchor=(TRAM_STOP_ICON_SIZE // 2, TRAM_STOP_ICON_SIZE // 2),
             ),
-            tooltip=f"Tram: {stop.name}",
+            tooltip=f"Tram: {stop.name}{lines_text}",
         ).add_to(tram_stop_layer)
     tram_stop_layer.add_to(map_object)
 
@@ -1072,6 +1147,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
     for station in stations.itertuples():
         symbol = station_symbol(station.kind)
         symbol_class = "station-symbol-s" if symbol == "S" else "station-symbol-u"
+        lines_text = f" ({station.lines})" if getattr(station, 'lines', '') else ""
         folium.Marker(
             location=[station.geometry.y, station.geometry.x],
             icon=folium.DivIcon(
@@ -1080,12 +1156,13 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
                 icon_size=(STATION_ICON_SIZE, STATION_ICON_SIZE),
                 icon_anchor=(STATION_ICON_SIZE // 2, STATION_ICON_SIZE // 2),
             ),
-            tooltip=f"{station.kind}: {station.name}",
+            tooltip=f"{station.kind}: {station.name}{lines_text}",
         ).add_to(station_layer)
     station_layer.add_to(map_object)
 
     regional_layer = folium.FeatureGroup(name="Regional stations", show=False)
     for station in regional_stations.itertuples():
+        lines_text = f" ({station.lines})" if getattr(station, 'lines', '') else ""
         folium.Marker(
             location=[station.geometry.y, station.geometry.x],
             icon=folium.DivIcon(
@@ -1094,7 +1171,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
                 icon_size=(STATION_ICON_SIZE, STATION_ICON_SIZE),
                 icon_anchor=(STATION_ICON_SIZE // 2, STATION_ICON_SIZE // 2),
             ),
-            tooltip=f"Regionalbahn: {station.name}",
+            tooltip=f"Regionalbahn: {station.name}{lines_text}",
         ).add_to(regional_layer)
     regional_layer.add_to(map_object)
 
@@ -1176,11 +1253,19 @@ def run_analysis(place=PLACE):
         log("No frequency cache found. Run compute_frequencies.py to add intensity layers.")
         
     regional_stations_df = all_outside_df[all_outside_df["term"].isin(REGIONAL_SEARCH_TERMS)].copy()
-    stations = assign_frequencies(stations, freq_df)
-    tram_stops = assign_frequencies(tram_stops, freq_df)
-    regional_stations_df = assign_frequencies(regional_stations_df, freq_df)
+    stations = assign_frequencies(stations, freq_df, "su")
+    tram_stops = assign_frequencies(tram_stops, freq_df, "tram")
+    regional_stations_df = assign_frequencies(regional_stations_df, freq_df, "regional")
+    # Combine all walk zones to clip the frequency overlays
+    all_walk_zones_list = [z for z in walk_zones.values() if z is not None]
+    if tram_walk_zone is not None:
+        all_walk_zones_list.append(tram_walk_zone)
+    if regional_walk_zone is not None:
+        all_walk_zones_list.append(regional_walk_zone)
+        
+    all_walk_zones_combined = robust_union(all_walk_zones_list)
     
-    frequency_overlays = build_frequency_overlays([stations, tram_stops, regional_stations_df])
+    frequency_overlays = build_frequency_overlays([stations, tram_stops, regional_stations_df], all_walk_zones_combined)
 
     # 5. Render
     tram_walk_zones_dict = {TRAM_WALK_MINUTES: tram_walk_zone}
