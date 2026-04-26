@@ -1,4 +1,5 @@
 import io
+import os
 import warnings
 from pathlib import Path
 
@@ -6,8 +7,10 @@ import folium
 import geopandas as gpd
 import networkx as nx
 import osmnx as ox
+import numpy as np
 import pandas as pd
 import requests
+from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point
 from shapely.ops import unary_union
 from shapely.validation import make_valid
@@ -42,6 +45,11 @@ ENVIRONMENTAL_JUSTICE_WMS_URL = "https://gdi.berlin.de/services/wms/ua_umweltger
 ENVIRONMENTAL_JUSTICE_LAYER = "z_gesamt_umwelt2023"
 ENVIRONMENTAL_JUSTICE_LAYER_NAME = "Umweltgerechtigkeit 2023/2024"
 ENVIRONMENTAL_JUSTICE_OPACITY = 0.5
+
+WOHNLAGEN_WMS_URL = "https://gdi.berlin.de/services/wms/wohnlagenadr2024"
+WOHNLAGEN_LAYER = "wohnlagenadr2024"
+WOHNLAGEN_LAYER_NAME = "Mietspiegel 2024 (Wohnlagen)"
+WOHNLAGEN_OPACITY = 0.6
 TRAM_STOPS_WFS_URL = (
     "https://gdi.berlin.de/services/wfs/oepnv_ungestoert"
     "?SERVICE=WFS"
@@ -104,8 +112,10 @@ OUTSIDE_S_SEARCH_TERMS = [
 ]
 REGIONAL_SEARCH_TERMS = [
     "Oranienburg", "Bernau", "Königs Wusterhausen", "Ludwigsfelde",
-    "Potsdam Hbf", "Nauen", "Brieselang", "Erkner", "Strausberg", 
-    "Fürstenwalde", "Flughafen BER"
+    "Potsdam Hbf", "Nauen", "Brieselang", "Falkensee", "Erkner", "Strausberg", 
+    "Fürstenwalde", "Flughafen BER", "Dallgow-Döberitz", "Elstal", "Wustermark",
+    "Werder (Havel)", "Teltow", "Großbeeren", "Birkengrund", "Rangsdorf", "Dahlewitz",
+    "Blankenfelde", "Schönefeld (bei Berlin)", "Hennigsdorf"
 ]
 REGIONAL_WALK_MINUTES = 20
 REGIONAL_WALK_COLOR = "#e85db4"
@@ -117,6 +127,9 @@ WALK_ZONE_5_CACHE = CACHE_DIR / "walk_zone_5.geojson"
 WALK_ZONE_10_CACHE = CACHE_DIR / "walk_zone_10.geojson"
 TRAM_ZONE_3_CACHE = CACHE_DIR / "tram_zone_3.geojson"
 REGIONAL_ZONE_20_CACHE = CACHE_DIR / "regional_zone_20.geojson"
+
+FREQUENCY_CACHE = CACHE_DIR / "station_frequencies.csv"
+FREQUENCY_COLOR = "#00008b"
 # -----------------------------------------------------------------------------
 
 
@@ -323,6 +336,10 @@ def fetch_stations_from_csv(search_terms):
                 
                 for term in search_terms:
                     if term.lower() in name.lower():
+                        # NEVER use replacement or bus services
+                        if any(x in name.lower() for x in ["ersatz", "bus", "sev", "ersatzverkehr", "(ers)"]):
+                            continue
+                            
                         # Priority for actual stations over bus stops sharing the name
                         is_likely_station = any(x in name.lower() for x in ["bahnhof", "hbf", "bhf", "s ", "s+u"])
                         is_exact = name.strip().lower() == term.lower()
@@ -341,13 +358,25 @@ def fetch_stations_from_csv(search_terms):
     df = gpd.GeoDataFrame(stations, crs="EPSG:4326")
     if not df.empty:
         # Score candidates to pick the best one for each term (e.g. prefer Hbf over a bus stop)
-        def score_name(n):
+        def score_name(n, term):
             n = n.lower()
-            if "hbf" in n or "hauptbahnhof" in n: return 10
-            if "bahnhof" in n or "bhf" in n: return 8
-            if "s " in n or "s+u" in n: return 7
-            return 1
-        df["score"] = df["name"].apply(score_name)
+            term = term.lower()
+            score = 0
+            if "hbf" in n or "hauptbahnhof" in n: score += 10
+            if "bahnhof" in n or "bhf" in n: score += 8
+            if "s " in n or "s+u" in n: score += 7
+            
+            # Penalize replacement/bus services heavily
+            if any(x in n for x in ["ersatz", "bus", "sev", "ersatzverkehr"]):
+                score -= 15
+                
+            # Bonus for exact or very close matches
+            if n == term: score += 5
+            elif n.startswith(term): score += 2
+            
+            return score
+
+        df["score"] = df.apply(lambda r: score_name(r["name"], r["term"]), axis=1)
         df = df.sort_values("score", ascending=False).drop_duplicates(subset=["term"])
     
     log(f"Found {len(df)} stations in CSV")
@@ -624,6 +653,57 @@ def build_edge_feathers(geometry, spread_meters):
         return []
 
 
+def assign_frequencies(stations, freq_df):
+    if freq_df is None or freq_df.empty or stations.empty:
+        stations["departures"] = 0
+        return stations
+
+    stations_metric = stations.to_crs(METRIC_CRS)
+    freq_gdf = gpd.GeoDataFrame(
+        freq_df, 
+        geometry=gpd.points_from_xy(freq_df.stop_lon, freq_df.stop_lat),
+        crs="EPSG:4326"
+    ).to_crs(METRIC_CRS)
+
+    tree = cKDTree(np.array(list(freq_gdf.geometry.apply(lambda p: (p.x, p.y)))))
+    coords = np.array(list(stations_metric.geometry.apply(lambda p: (p.x, p.y))))
+    
+    # Find GTFS stops within 200m and sum their daily departures
+    idx = tree.query_ball_point(coords, r=200)
+    
+    departures = []
+    for i in idx:
+        if i:
+            deps = freq_gdf.iloc[i]['daily_departures'].sum()
+            departures.append(deps)
+        else:
+            departures.append(0)
+            
+    stations["departures"] = departures
+    return stations
+
+
+def build_frequency_overlays(stations_list):
+    all_stats = pd.concat([s for s in stations_list if not s.empty], ignore_index=True)
+    if all_stats.empty or "departures" not in all_stats.columns:
+        return {}
+        
+    all_stats = gpd.GeoDataFrame(all_stats, geometry="geometry", crs="EPSG:4326").to_crs(METRIC_CRS)
+    overlays = {}
+    
+    # Tier 1: High frequency (> 300 departures/day)
+    tier1 = all_stats[all_stats["departures"] > 300]
+    if not tier1.empty:
+        overlays['high'] = gpd.GeoSeries([unary_union(tier1.geometry.buffer(500)).simplify(15)], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+        
+    # Tier 2: Medium frequency (100 - 300 departures/day)
+    tier2 = all_stats[(all_stats["departures"] > 100) & (all_stats["departures"] <= 300)]
+    if not tier2.empty:
+        overlays['medium'] = gpd.GeoSeries([unary_union(tier2.geometry.buffer(350)).simplify(15)], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+        
+    return overlays
+
+
 def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
     panel_html = f"""
     <style>
@@ -749,13 +829,14 @@ def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
       </div>
       <div class="su-meta">
         {station_count} S/U-Bahn · {tram_stop_count} Tram · {regional_count} Regional stations.
+        <br>Dark blue overlays show high transit connection frequency.
       </div>
     </div>
     """
     map_object.get_root().html.add_child(folium.Element(panel_html))
 
 
-def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regional_stations, regional_walk_zone):
+def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regional_stations, regional_walk_zone, frequency_overlays):
     log("Rendering Folium map...")
     place_boundary = ox.geocode_to_gdf(place).to_crs("EPSG:4326")
     centre = place_boundary.geometry.unary_union.centroid
@@ -789,6 +870,20 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         control=True,
         show=False,
         opacity=ENVIRONMENTAL_JUSTICE_OPACITY,
+    ).add_to(map_object)
+
+    folium.raster_layers.WmsTileLayer(
+        url=WOHNLAGEN_WMS_URL,
+        layers=WOHNLAGEN_LAYER,
+        name=WOHNLAGEN_LAYER_NAME,
+        fmt="image/png",
+        transparent=True,
+        version="1.3.0",
+        attr="Geoportal Berlin / Mietspiegel 2024",
+        overlay=True,
+        control=True,
+        show=False,
+        opacity=WOHNLAGEN_OPACITY,
     ).add_to(map_object)
 
     for level in sorted(walk_zones, reverse=True):
@@ -923,6 +1018,42 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         ).add_to(regional_zone_layer)
         regional_zone_layer.add_to(map_object)
 
+    # Add frequency overlays BEFORE the points, so they sit under the station icons
+    if frequency_overlays:
+        freq_layer = folium.FeatureGroup(name="Connection Frequency Overlay", show=True)
+        
+        # Draw Medium
+        if 'medium' in frequency_overlays:
+            folium.GeoJson(
+                gpd.GeoDataFrame({"tier": ["Medium Frequency"]}, geometry=[frequency_overlays['medium']], crs="EPSG:4326").__geo_interface__,
+                name="Medium Frequency",
+                control=False,
+                style_function=lambda _: {
+                    "fillColor": FREQUENCY_COLOR,
+                    "color": "transparent",
+                    "weight": 0,
+                    "fillOpacity": 0.08,
+                },
+                tooltip="Medium Frequency (100-300 departures/day)"
+            ).add_to(freq_layer)
+            
+        # Draw High
+        if 'high' in frequency_overlays:
+            folium.GeoJson(
+                gpd.GeoDataFrame({"tier": ["High Frequency"]}, geometry=[frequency_overlays['high']], crs="EPSG:4326").__geo_interface__,
+                name="High Frequency",
+                control=False,
+                style_function=lambda _: {
+                    "fillColor": FREQUENCY_COLOR,
+                    "color": "transparent",
+                    "weight": 0,
+                    "fillOpacity": 0.16,
+                },
+                tooltip="High Frequency (>300 departures/day)"
+            ).add_to(freq_layer)
+            
+        freq_layer.add_to(map_object)
+
     tram_stop_layer = folium.FeatureGroup(name="Tram stops", show=False)
     for stop in tram_stops.itertuples():
         folium.Marker(
@@ -980,6 +1111,8 @@ def run_analysis(place=PLACE):
     # 1. Fetch all station data
     stations = fetch_su_stations(place)
     tram_stops = load_tram_stops()
+    
+    # Use VBB CSV for outside stations
     all_outside_terms = list(set(OUTSIDE_S_SEARCH_TERMS + REGIONAL_SEARCH_TERMS))
     all_outside_df = fetch_stations_from_csv(all_outside_terms)
 
@@ -1035,11 +1168,24 @@ def run_analysis(place=PLACE):
                 regional_walk_zone = robust_union(outside_zones_dict[REGIONAL_WALK_MINUTES])
                 save_cached_polygon(regional_walk_zone, REGIONAL_ZONE_20_CACHE)
 
-    # 4. Render
-    regional_stations_df = all_outside_df[all_outside_df["term"].isin(REGIONAL_SEARCH_TERMS)]
+    # 4. Process connection frequencies
+    freq_df = None
+    if FREQUENCY_CACHE.exists():
+        freq_df = pd.read_csv(FREQUENCY_CACHE)
+    else:
+        log("No frequency cache found. Run compute_frequencies.py to add intensity layers.")
+        
+    regional_stations_df = all_outside_df[all_outside_df["term"].isin(REGIONAL_SEARCH_TERMS)].copy()
+    stations = assign_frequencies(stations, freq_df)
+    tram_stops = assign_frequencies(tram_stops, freq_df)
+    regional_stations_df = assign_frequencies(regional_stations_df, freq_df)
+    
+    frequency_overlays = build_frequency_overlays([stations, tram_stops, regional_stations_df])
+
+    # 5. Render
     tram_walk_zones_dict = {TRAM_WALK_MINUTES: tram_walk_zone}
     
-    render_map(place, stations, walk_zones, tram_stops, tram_walk_zones_dict, regional_stations_df, regional_walk_zone)
+    render_map(place, stations, walk_zones, tram_stops, tram_walk_zones_dict, regional_stations_df, regional_walk_zone, frequency_overlays)
 
 
 if __name__ == "__main__":
