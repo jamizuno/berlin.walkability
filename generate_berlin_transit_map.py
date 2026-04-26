@@ -8,8 +8,9 @@ import networkx as nx
 import osmnx as ox
 import pandas as pd
 import requests
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 from shapely.ops import unary_union
+from shapely.validation import make_valid
 
 
 warnings.filterwarnings("ignore")
@@ -19,8 +20,9 @@ ox.settings.cache_folder = "cache/osmnx"
 # -- SETTINGS -----------------------------------------------------------------
 PLACE = "Berlin, Germany"
 OUTPUT_HTML = Path("index.html")
-GRAPH_CACHE = Path("cache/berlin_walk_graph.graphml")
-TRAM_STOPS_CACHE = Path("cache/tram_stops.geojson")
+CACHE_DIR = Path("cache")
+GRAPH_CACHE = CACHE_DIR / "berlin_walk_graph.graphml"
+TRAM_STOPS_CACHE = CACHE_DIR / "tram_stops.geojson"
 
 WALK_LEVELS = [5, 10]
 WALK_SPEED_KMH = 4.5
@@ -31,8 +33,8 @@ BASEMAPDE_TILE_URL = (
 )
 BASEMAPDE_ATTRIBUTION = "© GeoBasis-DE / BKG, CC BY 4.0"
 BASEMAPS = [
-    (BASEMAPDE_TILE_URL, "basemap.de Web Raster Farbe", BASEMAPDE_ATTRIBUTION),
     ("OpenStreetMap", "OpenStreetMap", None),
+    (BASEMAPDE_TILE_URL, "basemap.de Web Raster Farbe", BASEMAPDE_ATTRIBUTION),
     ("CartoDB positron", "CartoDB Positron", None),
     ("CartoDB dark_matter", "CartoDB Dark Matter", None),
 ]
@@ -82,11 +84,88 @@ TRAM_WALK_OPACITY = 0.65
 TRAM_EDGE_DIFFUSION_METERS = 80
 TRAM_STOP_FILL = "#a870c0"
 TRAM_STOP_ICON_SIZE = 9
+
+REGIONAL_STATIONS_CSV = Path("Haltestellen_VBB/UMBW.CSV")
+OUTSIDE_S_SEARCH_TERMS = [
+    # North
+    "Oranienburg", "Lehnitz", "Borgsdorf", "Birkenwerder", "Hohen Neuendorf", 
+    "Bergfelde", "Schönfließ", "Mühlenbeck-Mönchmühle", "Hennigsdorf",
+    # Northeast
+    "Bernau", "Bernau-Friedenstal", "Zepernick", "Röntgental",
+    # East / Southeast
+    "Strausberg Nord", "Strausberg Stadt", "Hegermühle", "Strausberg", 
+    "Petershagen Nord", "Fredersdorf", "Neuenhagen", "Hoppegarten", "Birkenstein", 
+    "Erkner", "Königs Wusterhausen", "Wildau", "Zeuthen", "Eichwalde",
+    # South
+    "Flughafen BER", "Waßmannsdorf", "Schönefeld (bei Berlin)", "Blankenfelde", 
+    "Mahlow", "Teltow Stadt",
+    # Southwest
+    "Potsdam Hauptbahnhof", "Babelsberg", "Griebnitzsee"
+]
+REGIONAL_SEARCH_TERMS = [
+    "Oranienburg", "Bernau", "Königs Wusterhausen", "Ludwigsfelde",
+    "Potsdam Hbf", "Nauen", "Brieselang", "Erkner", "Strausberg", 
+    "Fürstenwalde", "Flughafen BER"
+]
+REGIONAL_WALK_MINUTES = 20
+REGIONAL_WALK_COLOR = "#e85db4"
+REGIONAL_WALK_OPACITY = 0.4
+REGIONAL_EDGE_DIFFUSION_METERS = 150
+REGIONAL_STATION_FILL = "#9c27b0"
+
+WALK_ZONE_5_CACHE = CACHE_DIR / "walk_zone_5.geojson"
+WALK_ZONE_10_CACHE = CACHE_DIR / "walk_zone_10.geojson"
+TRAM_ZONE_3_CACHE = CACHE_DIR / "tram_zone_3.geojson"
+REGIONAL_ZONE_20_CACHE = CACHE_DIR / "regional_zone_20.geojson"
 # -----------------------------------------------------------------------------
 
 
 def log(message):
     print(message, flush=True)
+
+
+def robust_union(geoms):
+    """Safely union a list of geometries, handling invalid or empty ones."""
+    if not geoms:
+        return None
+        
+    clean_geoms = []
+    for g in geoms:
+        if g is None or g.is_empty:
+            continue
+        
+        # Ensure validity
+        if not g.is_valid:
+            try:
+                g = make_valid(g)
+            except Exception:
+                g = g.buffer(0)
+            
+        # For walk zones, we primarily care about polygons
+        if g.geom_type == 'GeometryCollection':
+            for sub in g.geoms:
+                if sub.geom_type in ['Polygon', 'MultiPolygon'] and not sub.is_empty:
+                    clean_geoms.append(sub)
+        elif not g.is_empty:
+            clean_geoms.append(g)
+            
+    if not clean_geoms:
+        return None
+        
+    try:
+        res = unary_union(clean_geoms)
+        if not res.is_valid:
+            res = make_valid(res)
+        return res
+    except Exception as e:
+        log(f"Warning: robust_union encountered an error: {e}. Attempting iterative union.")
+        try:
+            res = clean_geoms[0]
+            for g in clean_geoms[1:]:
+                res = res.union(g)
+            return res
+        except Exception:
+            return None
 
 
 def text_value(value):
@@ -226,6 +305,71 @@ def fetch_su_stations(place):
     return stations
 
 
+def fetch_stations_from_csv(search_terms):
+    log(f"Fetching {len(search_terms)} station groups from VBB CSV...")
+    if not REGIONAL_STATIONS_CSV.exists():
+        log(f"Warning: CSV not found at {REGIONAL_STATIONS_CSV}")
+        return gpd.GeoDataFrame(columns=["name", "geometry"], crs="EPSG:4326")
+
+    stations = []
+    import csv
+    try:
+        with open(REGIONAL_STATIONS_CSV, mode='r', encoding='latin-1') as f:
+            reader = csv.reader(f, delimiter=';')
+            for row in reader:
+                if len(row) < 7: continue
+                name = row[0]
+                if row[2] != 'Bauwerk': continue
+                
+                for term in search_terms:
+                    if term.lower() in name.lower():
+                        # Priority for actual stations over bus stops sharing the name
+                        is_likely_station = any(x in name.lower() for x in ["bahnhof", "hbf", "bhf", "s ", "s+u"])
+                        is_exact = name.strip().lower() == term.lower()
+                        
+                        if is_likely_station or is_exact:
+                            try:
+                                lon = float(row[5].replace(',', '.'))
+                                lat = float(row[6].replace(',', '.'))
+                                stations.append({"name": name, "geometry": Point(lon, lat), "term": term})
+                                break 
+                            except (ValueError, IndexError):
+                                continue
+    except Exception as e:
+        log(f"Error reading CSV: {e}")
+
+    df = gpd.GeoDataFrame(stations, crs="EPSG:4326")
+    if not df.empty:
+        # Score candidates to pick the best one for each term (e.g. prefer Hbf over a bus stop)
+        def score_name(n):
+            n = n.lower()
+            if "hbf" in n or "hauptbahnhof" in n: return 10
+            if "bahnhof" in n or "bhf" in n: return 8
+            if "s " in n or "s+u" in n: return 7
+            return 1
+        df["score"] = df["name"].apply(score_name)
+        df = df.sort_values("score", ascending=False).drop_duplicates(subset=["term"])
+    
+    log(f"Found {len(df)} stations in CSV")
+    return df
+
+
+def load_cached_polygon(cache_path):
+    if cache_path.exists():
+        log(f"Loading cached walk zone from {cache_path}...")
+        gdf = gpd.read_file(cache_path)
+        if not gdf.empty:
+            return gdf.geometry.unary_union
+    return None
+
+
+def save_cached_polygon(polygon, cache_path):
+    log(f"Saving computed walk zone to {cache_path}...")
+    # polygon might be a single Polygon or MultiPolygon. 
+    # Wrap it in a list to create a GeoDataFrame.
+    gpd.GeoDataFrame({"geometry": [polygon]}, crs="EPSG:4326").to_file(str(cache_path), driver="GeoJSON")
+
+
 def add_walk_travel_times(graph, walk_speed_kmh):
     meters_per_second = walk_speed_kmh * 1000 / 3600
     for _, _, _, data in graph.edges(keys=True, data=True):
@@ -335,49 +479,152 @@ def build_walk_zones(graph, stations, walk_levels):
             edge_geometries,
             crs="EPSG:4326",
         ).to_crs(METRIC_CRS).buffer(EDGE_BUFFER_METERS)
-        zone = unary_union(
+        
+        zone = robust_union(
             list(selected.geometry)
             + list(edge_buffers)
             + list(station_buffers)
         )
 
-        if not zone.is_valid:
-            zone = zone.buffer(0)
-
-        zone = zone.simplify(SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
-        zone = unary_union([zone] + list(station_buffers))
-        zones[level] = gpd.GeoSeries([zone], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+        if zone:
+            zone = zone.simplify(SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
+            zones[level] = gpd.GeoSeries([zone], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+        else:
+            zones[level] = None
 
     return zones
 
 
+def build_outside_walk_zones(stations, minutes_per_station):
+    """
+    stations: GeoDataFrame of stations.
+    minutes_per_station: dict {station_name: [min1, min2, ...]}
+    Returns: dict {min: [polygons]}
+    """
+    results = {}
+    walk_speed_mps = WALK_SPEED_KMH * 1000 / 3600
+    
+    for station in stations.itertuples():
+        levels = minutes_per_station.get(station.name)
+        if not levels: continue
+        
+        log(f"Processing outside station: {station.name} for levels {levels}...")
+        max_min = max(levels)
+        buffer_dist = (max_min * 60 * walk_speed_mps) + 500
+        
+        try:
+            G = ox.graph_from_point((station.geometry.y, station.geometry.x), 
+                                     dist=buffer_dist, network_type='walk', simplify=True)
+            G = add_walk_travel_times(G, WALK_SPEED_KMH)
+            source_node = ox.distance.nearest_nodes(G, X=station.geometry.x, Y=station.geometry.y)
+            
+            # Precompute all needed travel times up to the max requested level
+            all_travel_times = nx.single_source_dijkstra_path_length(G, source_node, cutoff=max_min*60, weight="travel_time")
+            
+            nodes = ox.graph_to_gdfs(G, edges=False)
+            
+            for mins in levels:
+                travel_times = {node: dist for node, dist in all_travel_times.items() if dist <= mins*60}
+                if not travel_times: continue
+                
+                reached_nodes = nodes.loc[list(travel_times.keys())].to_crs(METRIC_CRS)
+                reached_buffers = reached_nodes.buffer(NODE_BUFFER_METERS)
+                
+                selected_node_ids = set(travel_times.keys())
+                edge_geometries = [
+                    graph_edge_geometry(G, u, v, data)
+                    for u, v, _, data in G.edges(keys=True, data=True)
+                    if u in selected_node_ids and v in selected_node_ids
+                ]
+                # Filter degenerate edges
+                edge_geometries = [g for g in edge_geometries if g.length > 1e-9]
+                edge_buffers = gpd.GeoSeries(edge_geometries, crs="EPSG:4326").to_crs(METRIC_CRS).buffer(EDGE_BUFFER_METERS)
+                
+                station_buffer = gpd.GeoSeries([station.geometry], crs="EPSG:4326").to_crs(METRIC_CRS).buffer(STATION_ACCESS_BUFFER_METERS)
+                
+                zone = robust_union(list(reached_buffers) + list(edge_buffers) + list(station_buffer))
+                if zone:
+                    zone = zone.simplify(SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
+                    zone = gpd.GeoSeries([zone], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+                    if mins not in results: results[mins] = []
+                    results[mins].append(zone)
+                
+        except Exception as e:
+            log(f"Warning: Could not compute zones for {station.name}: {e}")
+            
+    return results
+
+
 def build_edge_feathers(geometry, spread_meters):
-    metric_geometry = gpd.GeoSeries([geometry], crs="EPSG:4326").to_crs(METRIC_CRS).iloc[0]
-    previous_geometry = metric_geometry
-    feather_geometries = []
+    if geometry is None or geometry.is_empty:
+        return []
+    
+    try:
+        if not geometry.is_valid:
+            geometry = make_valid(geometry)
+        
+        # Convert to metric CRS for buffering
+        metric_series = gpd.GeoSeries([geometry], crs="EPSG:4326").to_crs(METRIC_CRS)
+        metric_geometry = metric_series.iloc[0]
+        
+        # Clean up metric geometry
+        if not metric_geometry.is_valid:
+            metric_geometry = make_valid(metric_geometry)
+        metric_geometry = metric_geometry.buffer(0)
+        
+        # Ensure we only have Polygons/MultiPolygons
+        if metric_geometry.geom_type == 'GeometryCollection':
+            polys = [g for g in metric_geometry.geoms if g.geom_type in ['Polygon', 'MultiPolygon']]
+            if not polys: return []
+            metric_geometry = unary_union(polys)
 
-    for step in range(1, len(EDGE_FEATHER_OPACITIES) + 1):
-        distance = spread_meters * step / len(EDGE_FEATHER_OPACITIES)
-        expanded_geometry = metric_geometry.buffer(distance)
-        feather_geometry = expanded_geometry.difference(previous_geometry)
+        previous_geometry = metric_geometry
+        feather_geometries = []
 
-        if not feather_geometry.is_empty:
-            if not feather_geometry.is_valid:
-                feather_geometry = feather_geometry.buffer(0)
-            feather_geometry = feather_geometry.simplify(
-                SIMPLIFY_TOLERANCE_METERS,
-                preserve_topology=True,
-            )
-            feather_geometries.append(
-                gpd.GeoSeries([feather_geometry], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
-            )
+        num_steps = len(EDGE_FEATHER_OPACITIES)
+        for step in range(1, num_steps + 1):
+            distance = spread_meters * step / num_steps
+            
+            try:
+                expanded_geometry = metric_geometry.buffer(distance)
+            except Exception:
+                # Fallback: tiny simplification can often fix topological errors
+                expanded_geometry = metric_geometry.simplify(0.05).buffer(distance)
+                
+            if not expanded_geometry.is_valid:
+                expanded_geometry = make_valid(expanded_geometry)
+            
+            # difference() can also be sensitive
+            try:
+                feather_geometry = expanded_geometry.difference(previous_geometry)
+            except Exception:
+                feather_geometry = expanded_geometry.buffer(0).difference(previous_geometry.buffer(0))
 
-        previous_geometry = expanded_geometry
+            if not feather_geometry.is_empty:
+                if not feather_geometry.is_valid:
+                    feather_geometry = make_valid(feather_geometry)
+                
+                feather_geometry = feather_geometry.simplify(
+                    SIMPLIFY_TOLERANCE_METERS,
+                    preserve_topology=True,
+                )
+                
+                # Filter for polygons only
+                if feather_geometry.geom_type in ['Polygon', 'MultiPolygon', 'GeometryCollection']:
+                    feather_geometries.append(
+                        gpd.GeoSeries([feather_geometry], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
+                    )
 
-    return feather_geometries
+            previous_geometry = expanded_geometry
+
+        return feather_geometries
+        
+    except Exception as e:
+        log(f"Warning: build_edge_feathers failed for a layer: {e}")
+        return []
 
 
-def add_map_panel(map_object, station_count, tram_stop_count):
+def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
     panel_html = f"""
     <style>
       .su-panel {{
@@ -394,6 +641,7 @@ def add_map_panel(map_object, station_count, tram_stop_count):
         color: #262824;
         font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         padding: 16px 18px;
+        line-height: 1.2;
       }}
       .su-kicker {{
         color: #667064;
@@ -463,6 +711,13 @@ def add_map_panel(map_object, station_count, tram_stop_count):
         height: {TRAM_STOP_ICON_SIZE}px;
         width: {TRAM_STOP_ICON_SIZE}px;
       }}
+      .station-symbol-r {{
+        background: {REGIONAL_STATION_FILL};
+        border-radius: 2px;
+        font-size: 7px;
+        height: {STATION_ICON_SIZE}px;
+        width: {STATION_ICON_SIZE}px;
+      }}
       @media (max-width: 560px) {{
         .su-panel {{
           top: 14px;
@@ -477,7 +732,7 @@ def add_map_panel(map_object, station_count, tram_stop_count):
     </style>
     <div class="su-panel">
       <div class="su-kicker">Berlin transit walkability</div>
-      <div class="su-title">Walk distance to S-Bahn, U-Bahn &amp; Tram</div>
+      <div class="su-title">Walk distance to S, U, Tram &amp; Regional</div>
       <div class="su-legend">
         <div class="su-legend-row">
           <span class="su-swatch" style="background:{WALK_COLORS[5]}"></span>5 min walk · S/U-Bahn
@@ -488,16 +743,19 @@ def add_map_panel(map_object, station_count, tram_stop_count):
         <div class="su-legend-row">
           <span class="su-swatch" style="background:{TRAM_WALK_COLOR}"></span>3 min walk · Tram
         </div>
+        <div class="su-legend-row">
+          <span class="su-swatch" style="background:{REGIONAL_WALK_COLOR}"></span>20 min walk · Regionalbahn
+        </div>
       </div>
       <div class="su-meta">
-        {station_count} S/U-Bahn stations · {tram_stop_count} tram stops. Walking speed: {WALK_SPEED_KMH:g} km/h.
+        {station_count} S/U-Bahn · {tram_stop_count} Tram · {regional_count} Regional stations.
       </div>
     </div>
     """
     map_object.get_root().html.add_child(folium.Element(panel_html))
 
 
-def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones):
+def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regional_stations, regional_walk_zone):
     log("Rendering Folium map...")
     place_boundary = ox.geocode_to_gdf(place).to_crs("EPSG:4326")
     centre = place_boundary.geometry.unary_union.centroid
@@ -622,6 +880,49 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones):
     ).add_to(tram_zone_layer)
     tram_zone_layer.add_to(map_object)
 
+    if regional_walk_zone is not None:
+        regional_zone_layer = folium.FeatureGroup(
+            name=f"{REGIONAL_WALK_MINUTES} min walk from Regionalbahn",
+            show=True,
+        )
+        for feather_geometry, feather_opacity in reversed(
+            list(zip(build_edge_feathers(regional_walk_zone, REGIONAL_EDGE_DIFFUSION_METERS), EDGE_FEATHER_OPACITIES))
+        ):
+            folium.GeoJson(
+                gpd.GeoDataFrame(
+                    {"minutes": [REGIONAL_WALK_MINUTES], "mode": ["edge feather"]},
+                    geometry=[feather_geometry],
+                    crs="EPSG:4326",
+                ).__geo_interface__,
+                name=f"{REGIONAL_WALK_MINUTES} min regional soft edge",
+                control=False,
+                style_function=lambda _, c=REGIONAL_WALK_COLOR, o=feather_opacity: {
+                    "fillColor": c,
+                    "color": c,
+                    "weight": 0,
+                    "fillOpacity": o,
+                    "opacity": 0,
+                },
+            ).add_to(regional_zone_layer)
+        folium.GeoJson(
+            gpd.GeoDataFrame(
+                {"minutes": [REGIONAL_WALK_MINUTES], "mode": ["walk"]},
+                geometry=[regional_walk_zone],
+                crs="EPSG:4326",
+            ).__geo_interface__,
+            name=f"{REGIONAL_WALK_MINUTES} min regional walk area",
+            control=False,
+            style_function=lambda _: {
+                "fillColor": REGIONAL_WALK_COLOR,
+                "color": REGIONAL_WALK_COLOR,
+                "weight": 0,
+                "fillOpacity": REGIONAL_WALK_OPACITY,
+                "opacity": 0,
+            },
+            tooltip=f"{REGIONAL_WALK_MINUTES} min walk to Regionalbahn station",
+        ).add_to(regional_zone_layer)
+        regional_zone_layer.add_to(map_object)
+
     tram_stop_layer = folium.FeatureGroup(name="Tram stops", show=False)
     for stop in tram_stops.itertuples():
         folium.Marker(
@@ -652,27 +953,93 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones):
         ).add_to(station_layer)
     station_layer.add_to(map_object)
 
+    regional_layer = folium.FeatureGroup(name="Regional stations", show=False)
+    for station in regional_stations.itertuples():
+        folium.Marker(
+            location=[station.geometry.y, station.geometry.x],
+            icon=folium.DivIcon(
+                class_name="station-marker-anchor",
+                html=f'<div class="station-symbol station-symbol-r">R</div>',
+                icon_size=(STATION_ICON_SIZE, STATION_ICON_SIZE),
+                icon_anchor=(STATION_ICON_SIZE // 2, STATION_ICON_SIZE // 2),
+            ),
+            tooltip=f"Regionalbahn: {station.name}",
+        ).add_to(regional_layer)
+    regional_layer.add_to(map_object)
+
     folium.LayerControl(collapsed=False).add_to(map_object)
-    add_map_panel(map_object, len(stations), len(tram_stops))
+    add_map_panel(map_object, len(stations), len(tram_stops), len(regional_stations))
     map_object.save(str(OUTPUT_HTML))
     log(f"Saved map to: {OUTPUT_HTML}")
 
 
 def run_analysis(place=PLACE):
     log(f"Starting Berlin S/U-Bahn walkability map for: {place}")
+    CACHE_DIR.mkdir(exist_ok=True)
+
+    # 1. Fetch all station data
     stations = fetch_su_stations(place)
-    if stations.empty:
-        raise RuntimeError("No S-Bahn or U-Bahn stations found.")
-
-    graph = load_walk_graph(place)
-    graph = add_walk_travel_times(graph, WALK_SPEED_KMH)
-
-    walk_zones = build_walk_zones(graph, stations, WALK_LEVELS)
     tram_stops = load_tram_stops()
-    if tram_stops.empty:
-        raise RuntimeError("No tram stops found.")
-    tram_walk_zones = build_walk_zones(graph, tram_stops, [TRAM_WALK_MINUTES])
-    render_map(place, stations, walk_zones, tram_stops, tram_walk_zones)
+    all_outside_terms = list(set(OUTSIDE_S_SEARCH_TERMS + REGIONAL_SEARCH_TERMS))
+    all_outside_df = fetch_stations_from_csv(all_outside_terms)
+
+    # 2. Check for cached zones
+    walk_zones = {
+        5: load_cached_polygon(WALK_ZONE_5_CACHE),
+        10: load_cached_polygon(WALK_ZONE_10_CACHE)
+    }
+    tram_walk_zone = load_cached_polygon(TRAM_ZONE_3_CACHE)
+    regional_walk_zone = load_cached_polygon(REGIONAL_ZONE_20_CACHE)
+
+    # 3. Compute missing zones
+    needs_graph = any(z is None for z in walk_zones.values()) or tram_walk_zone is None
+    graph = None
+    if needs_graph:
+        graph = load_walk_graph(place)
+        graph = add_walk_travel_times(graph, WALK_SPEED_KMH)
+
+    # 5/10 min S/U-Bahn zones
+    missing_mins = [m for m, z in walk_zones.items() if z is None]
+    if missing_mins:
+        log(f"Computing {missing_mins} minute walking reachability...")
+        inside_zones = build_walk_zones(graph, stations, missing_mins)
+        
+        # Outside S-Bahn
+        outside_s_df = all_outside_df[all_outside_df["term"].isin(OUTSIDE_S_SEARCH_TERMS)]
+        minutes_map = {s.name: missing_mins for s in outside_s_df.itertuples()}
+        outside_zones_dict = build_outside_walk_zones(outside_s_df, minutes_map)
+        
+        for mins in missing_mins:
+            merged = inside_zones[mins]
+            if mins in outside_zones_dict:
+                merged = robust_union([merged] + outside_zones_dict[mins])
+            walk_zones[mins] = merged
+            save_cached_polygon(walk_zones[mins], WALK_ZONE_5_CACHE if mins == 5 else WALK_ZONE_10_CACHE)
+
+    # 3 min Tram zone
+    if tram_walk_zone is None:
+        log("Computing 3-minute Tram walking reachability...")
+        tram_zones_dict = build_walk_zones(graph, tram_stops, [TRAM_WALK_MINUTES])
+        tram_walk_zone = tram_zones_dict[TRAM_WALK_MINUTES]
+        save_cached_polygon(tram_walk_zone, TRAM_ZONE_3_CACHE)
+
+    # 20 min Regional zone
+    if regional_walk_zone is None:
+        regional_stations = all_outside_df[all_outside_df["term"].isin(REGIONAL_SEARCH_TERMS)]
+        if not regional_stations.empty:
+            log(f"Computing {REGIONAL_WALK_MINUTES}-minute Regional walking reachability...")
+            minutes_map = {s.name: [REGIONAL_WALK_MINUTES] for s in regional_stations.itertuples()}
+            outside_zones_dict = build_outside_walk_zones(regional_stations, minutes_map)
+            if REGIONAL_WALK_MINUTES in outside_zones_dict:
+                # Merge all regional zones
+                regional_walk_zone = robust_union(outside_zones_dict[REGIONAL_WALK_MINUTES])
+                save_cached_polygon(regional_walk_zone, REGIONAL_ZONE_20_CACHE)
+
+    # 4. Render
+    regional_stations_df = all_outside_df[all_outside_df["term"].isin(REGIONAL_SEARCH_TERMS)]
+    tram_walk_zones_dict = {TRAM_WALK_MINUTES: tram_walk_zone}
+    
+    render_map(place, stations, walk_zones, tram_stops, tram_walk_zones_dict, regional_stations_df, regional_walk_zone)
 
 
 if __name__ == "__main__":
