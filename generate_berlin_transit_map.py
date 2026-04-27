@@ -761,8 +761,8 @@ def build_frequency_overlays(stations_list, all_walk_zones=None):
 def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
     panel_html = f"""
     <style>
-      .freq-blend {{
-        mix-blend-mode: plus-lighter;
+      .leaflet-freq_pane-pane {{
+        mix-blend-mode: multiply;
       }}
       .su-panel {{
         position: fixed;
@@ -1099,7 +1099,6 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
                         "color": "transparent",
                         "weight": 0,
                         "fillOpacity": o,
-                        "className": "freq-blend",
                     },
                     pane="freq_pane"
                 ).add_to(freq_layer)
@@ -1114,7 +1113,6 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
                     "color": "transparent",
                     "weight": 0,
                     "fillOpacity": base_opacity,
-                    "className": "freq-blend",
                 },
                 tooltip=tooltip,
                 pane="freq_pane"
