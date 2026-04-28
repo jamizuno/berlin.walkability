@@ -73,10 +73,11 @@ def compute_frequencies():
         "S+U Brandenburger Tor", "S+U Berlin Hauptbahnhof"
     ]
     
-    # U2 and S-Bahn stations reported as missing/zero due to western corridor construction
+    # U2, S-Bahn, and Regional stations reported as missing/zero due to construction or SEV
     extra_fixes = [
         {"names": ["U Neu-Westend", "U Olympia-Stadion", "U Ruhleben", "U Theodor-Heuss-Platz"], "line": "U2|400", "deps": 420},
-        {"names": ["S Olympiastadion", "S Pichelsberg", "S Stresow", "S Messe Süd", "S Heerstraße"], "line": "S3|109,S9|109", "deps": 350}
+        {"names": ["S Olympiastadion", "S Pichelsberg", "S Stresow", "S Messe Süd", "S Heerstraße"], "line": "S3|109,S9|109", "deps": 350},
+        {"names": ["Ludwigsfelde"], "line": "RE3|100,RE4|100", "deps": 100}
     ]
     
     # Process U5 first (existing logic)
@@ -108,6 +109,14 @@ def compute_frequencies():
         mask = stops['stop_name'].str.contains('|'.join(fix['names']), case=False, na=False)
         stops_raw = stops[mask].copy()
         stops_raw = stops_raw[~stops_raw['stop_name'].str.contains('/', na=False)]
+        
+        # For regional stations, prefer names without commas (the main station name) 
+        # to avoid averaging with distant bus stop locations.
+        if any(l.startswith('RE') or l.startswith('RB') for l in fix['line'].split(',')):
+            no_commas = stops_raw[~stops_raw['stop_name'].str.contains(',', na=False)]
+            if not no_commas.empty:
+                stops_raw = no_commas
+
         stops_raw['stop_lat'] = pd.to_numeric(stops_raw['stop_lat'], errors='coerce')
         stops_raw['stop_lon'] = pd.to_numeric(stops_raw['stop_lon'], errors='coerce')
         grouped = stops_raw.groupby('stop_name').agg({'stop_lat': 'mean', 'stop_lon': 'mean'}).reset_index()

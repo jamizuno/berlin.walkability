@@ -108,11 +108,13 @@ OUTSIDE_S_SEARCH_TERMS = [
     "Flughafen BER", "Waßmannsdorf", "Schönefeld (bei Berlin)", "Blankenfelde", 
     "Mahlow", "Teltow Stadt",
     # Southwest
-    "Potsdam Hauptbahnhof", "Babelsberg", "Griebnitzsee"
+    # Southwest
+    "Potsdam Babelsberg"
 ]
 REGIONAL_SEARCH_TERMS = [
     "Oranienburg", "Bernau", "Königs Wusterhausen", "Ludwigsfelde",
-    "Potsdam Hbf", "Nauen", "Brieselang", "Falkensee", "Erkner", "Strausberg", 
+    "Potsdam Hauptbahnhof", "Potsdam Hbf", "Potsdam Griebnitzsee", "Potsdam Charlottenhof",
+    "Potsdam Pirschheide", "Nauen", "Brieselang", "Falkensee", "Erkner", "Strausberg", 
     "Fürstenwalde", "Flughafen BER", "Dallgow-Döberitz", "Elstal", "Wustermark",
     "Werder (Havel)", "Teltow", "Großbeeren", "Birkengrund", "Rangsdorf", "Dahlewitz",
     "Blankenfelde", "Schönefeld (bei Berlin)", "Hennigsdorf"
@@ -406,13 +408,36 @@ def add_walk_travel_times(graph, walk_speed_kmh):
     return graph
 
 
+def filter_graph_highways(G):
+    """Remove motorway and trunk roads from the graph to ensure realistic walking paths."""
+    forbidden_types = {'motorway', 'motorway_link', 'trunk', 'trunk_link'}
+    edges_to_remove = []
+    for u, v, k, data in G.edges(data=True, keys=True):
+        h = data.get('highway')
+        # highway can be a list if edges were simplified/merged
+        h_list = h if isinstance(h, list) else [h]
+        if any(t in forbidden_types for t in h_list):
+            # Check for explicit foot=yes override
+            f = data.get('foot')
+            if not (isinstance(f, str) and f in ('yes', 'designated')):
+                edges_to_remove.append((u, v, k))
+    
+    G.remove_edges_from(edges_to_remove)
+    # Remove nodes that are now isolated
+    G.remove_nodes_from(list(nx.isolates(G)))
+    return G
+
+
 def load_walk_graph(place):
     if GRAPH_CACHE.exists():
         log(f"Loading cached walking network from {GRAPH_CACHE}...")
-        return ox.load_graphml(str(GRAPH_CACHE))
+        graph = ox.load_graphml(str(GRAPH_CACHE))
+        # Re-apply filter even to cached graphs to be safe
+        return filter_graph_highways(graph)
 
     log("Downloading Berlin walking network. The first Berlin-wide run can take a while...")
     graph = ox.graph_from_place(place, network_type="walk", simplify=True)
+    graph = filter_graph_highways(graph)
     graph = add_walk_travel_times(graph, WALK_SPEED_KMH)
     GRAPH_CACHE.parent.mkdir(parents=True, exist_ok=True)
     ox.save_graphml(graph, filepath=str(GRAPH_CACHE))
@@ -544,6 +569,7 @@ def build_outside_walk_zones(stations, minutes_per_station):
         try:
             G = ox.graph_from_point((station.geometry.y, station.geometry.x), 
                                      dist=buffer_dist, network_type='walk', simplify=True)
+            G = filter_graph_highways(G)
             G = add_walk_travel_times(G, WALK_SPEED_KMH)
             source_node = ox.distance.nearest_nodes(G, X=station.geometry.x, Y=station.geometry.y)
             
