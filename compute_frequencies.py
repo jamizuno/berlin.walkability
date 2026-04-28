@@ -77,7 +77,15 @@ def compute_frequencies():
     extra_fixes = [
         {"names": ["U Neu-Westend", "U Olympia-Stadion", "U Ruhleben", "U Theodor-Heuss-Platz"], "line": "U2|400", "deps": 420},
         {"names": ["S Olympiastadion", "S Pichelsberg", "S Stresow", "S Messe Süd", "S Heerstraße"], "line": "S3|109,S9|109", "deps": 350},
-        {"names": ["Ludwigsfelde"], "line": "RE3|100,RE4|100", "deps": 100}
+        {"names": ["Ludwigsfelde"], "line": "RE3|100,RE4|100", "deps": 100},
+        # Stations with VBB data gaps (1-3 departures instead of realistic values)
+        {"names": ["Sachsenhausen, Bahnhof"], "line": "RE5|100", "deps": 60},
+        {"names": ["Baruth, Bahnhof"], "line": "RE8|100", "deps": 40},
+        {"names": ["Zossen, Bahnhof"], "line": "RE8|100,RB24|100", "deps": 60},
+        {"names": ["Basdorf (BAR), Bahnhof"], "line": "RB27|100", "deps": 40},
+        {"names": ["Walddrehna, Bahnhof"], "line": "RE8|100", "deps": 20},
+        {"names": ["Wünsdorf-Waldstadt, Bahnhof"], "line": "RE8|100,RB24|100", "deps": 30},
+        {"names": ["Wustermark, Bahnhof"], "line": "RE4|100", "deps": 30},
     ]
     
     # Process U5 first (existing logic)

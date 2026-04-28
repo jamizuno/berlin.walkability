@@ -95,29 +95,77 @@ TRAM_STOP_ICON_SIZE = 9
 
 REGIONAL_STATIONS_CSV = Path("Haltestellen_VBB/UMBW.CSV")
 OUTSIDE_S_SEARCH_TERMS = [
-    # North
+    # North — S1, S8, S25
     "Oranienburg", "Lehnitz", "Borgsdorf", "Birkenwerder", "Hohen Neuendorf", 
     "Bergfelde", "Schönfließ", "Mühlenbeck-Mönchmühle", "Hennigsdorf",
-    # Northeast
+    # Northeast — S2
     "Bernau", "Bernau-Friedenstal", "Zepernick", "Röntgental",
-    # East / Southeast
-    "Strausberg Nord", "Strausberg Stadt", "Hegermühle", "Strausberg", 
-    "Petershagen Nord", "Fredersdorf", "Neuenhagen", "Hoppegarten", "Birkenstein", 
+    # East — S5, RB26
+    "Strausberg Nord", "Strausberg Stadt", "Hegermühle", "Strausberg",
+    "Petershagen Nord", "Fredersdorf", "Neuenhagen", "Hoppegarten",
+    # Southeast — S3, S46
     "Erkner", "Königs Wusterhausen", "Wildau", "Zeuthen", "Eichwalde",
-    # South
+    # South — S9/S45, S2
     "Flughafen BER", "Waßmannsdorf", "Schönefeld (bei Berlin)", "Blankenfelde", 
     "Mahlow", "Teltow Stadt",
-    # Southwest
-    # Southwest
-    "Potsdam Babelsberg"
+    # Southwest — S1, S7
+    "Griebnitzsee", "S Babelsberg", "Medienstadt Babelsberg", "Potsdam Hauptbahnhof",
 ]
 REGIONAL_SEARCH_TERMS = [
-    "Oranienburg", "Bernau", "Königs Wusterhausen", "Ludwigsfelde",
-    "Potsdam Hauptbahnhof", "Potsdam Hbf", "Potsdam Griebnitzsee", "Potsdam Charlottenhof",
-    "Potsdam Pirschheide", "Nauen", "Brieselang", "Falkensee", "Erkner", "Strausberg", 
-    "Fürstenwalde", "Flughafen BER", "Dallgow-Döberitz", "Elstal", "Wustermark",
-    "Werder (Havel)", "Teltow", "Großbeeren", "Birkengrund", "Rangsdorf", "Dahlewitz",
-    "Blankenfelde", "Schönefeld (bei Berlin)", "Hennigsdorf"
+    # ── SOUTH CORRIDOR (Anhalter Bahn) ──────────────────────────────────────
+    # Note: Südkreuz, Potsdamer Platz, Hauptbahnhof covered by S/U-Bahn zones
+    "Lichterfelde Ost",
+    "Teltow",          # Regional station (distinct from Teltow Stadt / S-Bahn)
+    "Großbeeren", "Birkengrund",
+    "Ludwigsfelde",
+    "Thyrow", "Trebbin", "Woltersdorf",
+    "Luckenwalde", "Jüterbog",
+
+    # ── WEST CORRIDOR (Magdeburger Bahn / Potsdamer Bahn) ───────────────────
+    # Note: Ostbahnhof, Alexanderplatz, Hbf, Zoologischer Garten covered by S/U-Bahn
+    "Wannsee",
+    "Potsdam Hauptbahnhof",
+    "Charlottenhof", "Park Sanssouci", "Pirschheide",
+    # RB21/22/23 south of Potsdam Hbf
+    "Rehbrücke", "Wilhelmshorst", "Michendorf", "Seddin",
+    "Beelitz-Heilstätten", "Beelitz, Stadt",
+    "Werder (Havel)", "Groß Kreutz", "Götz", "Brandenburg",
+
+    # ── SOUTHEAST CORRIDOR (Görlitzer Bahn) ─────────────────────────────────
+    # Note: Ostkreuz, Schöneweide, Adlershof partly covered by S-Bahn zones
+    "Königs Wusterhausen", "Zeesen", "Bestensee", "Groß Köris",
+    "Halbe", "Oderin", "Schönwalde (Spreewald)",
+    "Lubolz", "Lübben", "Lübbenau",
+
+    # ── NORTH CORRIDOR ───────────────────────────────────────────────────────
+    # Toward Eberswalde (RE3/RB24)
+    # Note: Gesundbrunnen covered by S-Bahn zone
+    "Bernau", "Rüdnitz", "Biesenthal", "Melchow", "Eberswalde",
+    # RB27 Heidekrautbahn (Karow → Wandlitz branch)
+    "Schönerlinde", "Schönwalde (BAR)", "Basdorf", "Wandlitz", "Wandlitzsee", "Klosterfelde",
+    # Toward Oranienburg (RE5/RB12)
+    "Oranienburg", "Sachsenhausen", "Nassenheide",
+    "Grüneberg", "Löwenberg (Mark)",
+    # RB20 Velten/Kremmen branch (from Hennigsdorf)
+    "Velten", "Bärenklau", "Vehlefanz", "Schwante", "Kremmen",
+
+    # ── EAST CORRIDOR ───────────────────────────────────────────────────────
+    "Erkner", "Fürstenwalde", "Strausberg",
+    # RB26 beyond Strausberg
+    "Herrensee", "Rehfelde", "Müncheberg",
+    "Mahlsdorf",
+
+    # ── NORTHWEST CORRIDOR ──────────────────────────────────────────────────
+    "Nauen", "Brieselang", "Falkensee",
+    "Dallgow-Döberitz", "Elstal", "Wustermark",
+
+    # ── SOUTH/SOUTHEAST ─────────────────────────────────────────────────────
+    "Flughafen BER", "Schönefeld (bei Berlin)",
+    "Blankenfelde", "Mahlow", "Rangsdorf", "Dahlewitz", "Dabendorf", "Zossen",
+    "Wünsdorf-Waldstadt",
+    "Hennigsdorf",
+    # RE2 / Cottbus
+    "Lübben",
 ]
 REGIONAL_WALK_MINUTES = 20
 REGIONAL_WALK_COLOR = "#e85db4"
@@ -131,7 +179,9 @@ TRAM_ZONE_3_CACHE = CACHE_DIR / "tram_zone_3.geojson"
 REGIONAL_ZONE_20_CACHE = CACHE_DIR / "regional_zone_20.geojson"
 
 FREQUENCY_CACHE = CACHE_DIR / "station_frequencies.csv"
-FREQUENCY_COLOR = "#00008b"
+FREQ_BAR_FILLED = "#e8a020"
+FREQ_ICON_W = 15
+FREQ_ICON_H = 10
 # -----------------------------------------------------------------------------
 
 
@@ -343,15 +393,17 @@ def fetch_stations_from_csv(search_terms):
                             continue
                             
                         # Priority for actual stations over bus stops sharing the name
-                        is_likely_station = any(x in name.lower() for x in ["bahnhof", "hbf", "bhf", "s ", "s+u"])
+                        is_likely_station = any(x in name.lower() for x in ["bahnhof", "hbf", "bhf", "s ", "s+u", "flughafen"])
+                        # Also accept "Stadtname, Bahnhof" VBB pattern (term + ", bahnhof")
+                        is_vbb_bahnhof = name.lower().startswith(term.lower() + ",")
                         is_exact = name.strip().lower() == term.lower()
                         
-                        if is_likely_station or is_exact:
+                        if is_likely_station or is_exact or is_vbb_bahnhof:
                             try:
                                 lon = float(row[5].replace(',', '.'))
                                 lat = float(row[6].replace(',', '.'))
                                 stations.append({"name": name, "geometry": Point(lon, lat), "term": term})
-                                break 
+                                # Don't break — collect all candidates, scoring will pick the best
                             except (ValueError, IndexError):
                                 continue
     except Exception as e:
@@ -381,6 +433,10 @@ def fetch_stations_from_csv(search_terms):
         df["score"] = df.apply(lambda r: score_name(r["name"], r["term"]), axis=1)
         df = df.sort_values("score", ascending=False).drop_duplicates(subset=["term"])
     
+    matched_terms = set(df["term"].tolist()) if not df.empty else set()
+    unmatched = [t for t in search_terms if t not in matched_terms]
+    if unmatched:
+        log(f"WARNING: No station found in CSV for: {unmatched}")
     log(f"Found {len(df)} stations in CSV")
     return df
 
@@ -747,49 +803,31 @@ def assign_frequencies(stations, freq_df, category="su"):
     return stations
 
 
-def build_frequency_overlays(stations_list, all_walk_zones=None):
-    all_stats = pd.concat([s for s in stations_list if not s.empty], ignore_index=True)
-    if all_stats.empty or "departures" not in all_stats.columns:
-        return {}
-        
-    all_stats = gpd.GeoDataFrame(all_stats, geometry="geometry", crs="EPSG:4326").to_crs(METRIC_CRS)
-    overlays = {}
-    
-    if all_walk_zones is not None and not all_walk_zones.is_empty:
-        if isinstance(all_walk_zones, gpd.GeoSeries):
-            all_walk_zones_metric = all_walk_zones.to_crs(METRIC_CRS).unary_union
-        else:
-            all_walk_zones_metric = gpd.GeoSeries([all_walk_zones], crs="EPSG:4326").to_crs(METRIC_CRS).unary_union
-    else:
-        all_walk_zones_metric = None
-    
-    # Tier 1: High frequency (> 1200 departures/day)
-    tier1 = all_stats[all_stats["departures"] > 1200]
-    if not tier1.empty:
-        geom = unary_union(tier1.geometry.buffer(250)).simplify(15)
-        if all_walk_zones_metric is not None and not all_walk_zones_metric.is_empty:
-            geom = geom.intersection(all_walk_zones_metric)
-        if not geom.is_empty:
-            overlays['high'] = gpd.GeoSeries([geom], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
-        
-    # Tier 2: Medium frequency (400 - 1200 departures/day)
-    tier2 = all_stats[(all_stats["departures"] >= 400) & (all_stats["departures"] <= 1200)]
-    if not tier2.empty:
-        geom = unary_union(tier2.geometry.buffer(175)).simplify(15)
-        if all_walk_zones_metric is not None and not all_walk_zones_metric.is_empty:
-            geom = geom.intersection(all_walk_zones_metric)
-        if not geom.is_empty:
-            overlays['medium'] = gpd.GeoSeries([geom], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
-        
-    return overlays
+def freq_tier_for(departures):
+    if departures >= 1200: return 3
+    if departures >= 400:  return 2
+    if departures >= 100:  return 1
+    return 0
+
+
+def freq_bars_html(tier):
+    f = FREQ_BAR_FILLED
+    e = "rgba(160,160,160,0.35)"
+    c1 = f if tier >= 1 else e
+    c2 = f if tier >= 2 else e
+    c3 = f if tier >= 3 else e
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{FREQ_ICON_W}" height="{FREQ_ICON_H}" style="display:block">'
+        f'<rect x="0"  y="6" width="4" height="4"  fill="{c1}" rx="0.5"/>'
+        f'<rect x="5.5" y="3" width="4" height="7"  fill="{c2}" rx="0.5"/>'
+        f'<rect x="11" y="0" width="4" height="10" fill="{c3}" rx="0.5"/>'
+        f'</svg>'
+    )
 
 
 def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
     panel_html = f"""
     <style>
-      .leaflet-freq_pane-pane {{
-        mix-blend-mode: multiply;
-      }}
       .su-panel {{
         position: fixed;
         top: 28px;
@@ -910,16 +948,20 @@ def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
           <span class="su-swatch" style="background:{REGIONAL_WALK_COLOR}"></span>20 min walk · Regionalbahn
         </div>
       </div>
+      <div class="su-legend">
+        <div class="su-legend-row">{freq_bars_html(1)}&nbsp;&nbsp;Low frequency (100–400 dep/day)</div>
+        <div class="su-legend-row">{freq_bars_html(2)}&nbsp;&nbsp;Medium frequency (400–1200 dep/day)</div>
+        <div class="su-legend-row">{freq_bars_html(3)}&nbsp;&nbsp;High frequency (&gt;1200 dep/day)</div>
+      </div>
       <div class="su-meta">
         {station_count} S/U-Bahn · {tram_stop_count} Tram · {regional_count} Regional stations.
-        <br>Dark blue overlays show high transit connection frequency.
       </div>
     </div>
     """
     map_object.get_root().html.add_child(folium.Element(panel_html))
 
 
-def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regional_stations, regional_walk_zone, frequency_overlays):
+def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regional_stations, regional_walk_zone):
     log("Rendering Folium map...")
     place_boundary = ox.geocode_to_gdf(place).to_crs("EPSG:4326")
     centre = place_boundary.geometry.unary_union.centroid
@@ -930,8 +972,6 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         control_scale=True,
     )
     
-    # Create a custom pane specifically for frequency overlays to sit above walk zones (400) but below shadows/WMS (500)
-    folium.map.CustomPane("freq_pane", z_index=450, pointer_events=False).add_to(map_object)
     for i, (tiles, label, attribution) in enumerate(BASEMAPS):
         tile_options = {
             "tiles": tiles,
@@ -1106,51 +1146,27 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         ).add_to(regional_zone_layer)
         regional_zone_layer.add_to(map_object)
 
-    # Add frequency overlays BEFORE the points, so they sit under the station icons
-    if frequency_overlays:
-        freq_layer = folium.FeatureGroup(name="Connection Frequency Overlay", show=True)
-        
-        def render_freq_tier(name, geom, base_opacity, feather_spread, tooltip):
-            # Render feathers
-            feathers = build_edge_feathers(geom, feather_spread)
-            num_feathers = len(feathers)
-            for i, feather_geometry in enumerate(reversed(feathers)):
-                f_opacity = base_opacity * (0.1 + 0.8 * (i / max(1, num_feathers - 1)))
-                folium.GeoJson(
-                    gpd.GeoDataFrame({"tier": [name]}, geometry=[feather_geometry], crs="EPSG:4326").__geo_interface__,
-                    name=f"{name} feather",
-                    control=False,
-                    style_function=lambda _, o=f_opacity: {
-                        "fillColor": FREQUENCY_COLOR,
-                        "color": "transparent",
-                        "weight": 0,
-                        "fillOpacity": o,
-                    },
-                    pane="freq_pane"
-                ).add_to(freq_layer)
-                
-            # Render core
-            folium.GeoJson(
-                gpd.GeoDataFrame({"tier": [name]}, geometry=[geom], crs="EPSG:4326").__geo_interface__,
-                name=name,
-                control=False,
-                style_function=lambda _: {
-                    "fillColor": FREQUENCY_COLOR,
-                    "color": "transparent",
-                    "weight": 0,
-                    "fillOpacity": base_opacity,
-                },
-                tooltip=tooltip,
-                pane="freq_pane"
-            ).add_to(freq_layer)
-
-        if 'medium' in frequency_overlays:
-            render_freq_tier("Medium Frequency", frequency_overlays['medium'], 0.16, 175, "Medium Frequency (400-1200 departures/day)")
-            
-        if 'high' in frequency_overlays:
-            render_freq_tier("High Frequency", frequency_overlays['high'], 0.28, 250, "High Frequency (>1200 departures/day)")
-            
-        freq_layer.add_to(map_object)
+    # Frequency bar icons — one per S/U or regional station, placed above the station dot
+    freq_layer = folium.FeatureGroup(name="Connection Frequency", show=True)
+    icon_anchor_y = FREQ_ICON_H + STATION_ICON_SIZE // 2 + 2
+    all_freq_stations = pd.concat(
+        [s for s in [stations, regional_stations] if not s.empty and "departures" in s.columns],
+        ignore_index=True,
+    )
+    for row in all_freq_stations.itertuples():
+        tier = freq_tier_for(getattr(row, "departures", 0) or 0)
+        if tier == 0:
+            continue
+        folium.Marker(
+            location=[row.geometry.y, row.geometry.x],
+            icon=folium.DivIcon(
+                class_name="station-marker-anchor",
+                html=freq_bars_html(tier),
+                icon_size=(FREQ_ICON_W, FREQ_ICON_H),
+                icon_anchor=(FREQ_ICON_W // 2, icon_anchor_y),
+            ),
+        ).add_to(freq_layer)
+    freq_layer.add_to(map_object)
 
     tram_stop_layer = folium.FeatureGroup(name="Tram stops", show=False)
     for stop in tram_stops.itertuples():
@@ -1280,21 +1296,11 @@ def run_analysis(place=PLACE):
     stations = assign_frequencies(stations, freq_df, "su")
     tram_stops = assign_frequencies(tram_stops, freq_df, "tram")
     regional_stations_df = assign_frequencies(regional_stations_df, freq_df, "regional")
-    # Combine all walk zones to clip the frequency overlays
-    all_walk_zones_list = [z for z in walk_zones.values() if z is not None]
-    if tram_walk_zone is not None:
-        all_walk_zones_list.append(tram_walk_zone)
-    if regional_walk_zone is not None:
-        all_walk_zones_list.append(regional_walk_zone)
-        
-    all_walk_zones_combined = robust_union(all_walk_zones_list)
-    
-    frequency_overlays = build_frequency_overlays([stations, tram_stops, regional_stations_df], all_walk_zones_combined)
 
     # 5. Render
     tram_walk_zones_dict = {TRAM_WALK_MINUTES: tram_walk_zone}
-    
-    render_map(place, stations, walk_zones, tram_stops, tram_walk_zones_dict, regional_stations_df, regional_walk_zone, frequency_overlays)
+
+    render_map(place, stations, walk_zones, tram_stops, tram_walk_zones_dict, regional_stations_df, regional_walk_zone)
 
 
 if __name__ == "__main__":
