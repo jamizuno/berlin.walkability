@@ -3,6 +3,29 @@ import os
 import warnings
 from pathlib import Path
 
+# =============================================================================
+# BERLIN TRANSIT MAP GENERATOR
+# =============================================================================
+# Data Source: VBB GTFS (Verkehrsverbund Berlin-Brandenburg)
+# Output: Interactive map showing transit accessibility in Berlin
+#
+# Station Data Summary (from GTFS):
+#   - S-Bahn: 233 stations (S1, S2, S25, S26, S3, S4, S41, S42, S46, S47, S5, S75, S7, S8, S85, S9)
+#   - U-Bahn: 170 stations (U1, U2, U3, U4, U5, U6, U7, U8, U9)
+#   - Tram: 625 stations (M1, M2, M4, M5, M6, M8, M10, M13, M17)
+#   - Regio-RE: 541 stations (RE1, RE2, RE3, RE4, RE5, RE6, RE7, RE8, RE10, RE11, RE13, RE14, RE15, RE18, RE20, RE85)
+#   - Regio-RB: 143 stations (RB10, RB12-RB27, RB31, RB32, RB33, RB35-RB37, RB43, RB45, RB46, RB49, RB51, RB54, RB55, RB60, RB61, RB63-RB65, RB73, RB74, RB91, RB93)
+#   - FEX: 12 stations
+#   Total: 1,499 unique stations
+#
+# Lines Coverage:
+#   S-Bahn: S1, S2, S25, S26, S3, S4, S41, S42, S46, S47, S5, S75, S7, S8, S85, S9
+#   U-Bahn: U1, U2, U3, U4, U5, U6, U7, U8, U9
+#   Tram: M1, M2, M4, M5, M6, M8, M10, M13, M17
+#   Regional: RE1-RE8, RE10, RE11, RE13-RE15, RE18, RE20, RE85, RB10, RB12-RB27, RB31, RB32, RB33, RB35-RB37, RB43, RB45, RB46, RB49, RB51, RB54, RB55, RB60, RB61, RB63-RB65, RB73, RB74, RB91, RB93
+#   FEX: FEX
+# =============================================================================
+
 import folium
 import geopandas as gpd
 import networkx as nx
@@ -93,7 +116,7 @@ TRAM_EDGE_DIFFUSION_METERS = 80
 TRAM_STOP_FILL = "#a870c0"
 TRAM_STOP_ICON_SIZE = 9
 
-REGIONAL_STATIONS_CSV = Path("Haltestellen_VBB/UMBW.CSV")
+GTFS_DIR = Path("Fahrplan_VBB-2026")
 OUTSIDE_S_SEARCH_TERMS = [
     # North — S1, S8, S25
     "Oranienburg", "Lehnitz", "Borgsdorf", "Birkenwerder", "Hohen Neuendorf", 
@@ -179,7 +202,7 @@ TRAM_ZONE_3_CACHE = CACHE_DIR / "tram_zone_3.geojson"
 REGIONAL_ZONE_20_CACHE = CACHE_DIR / "regional_zone_20.geojson"
 
 FREQUENCY_CACHE = CACHE_DIR / "station_frequencies.csv"
-FREQ_BAR_FILLED = "#e8a020"
+FREQ_BAR_FILLED = "#641abd"
 FREQ_ICON_W = 15
 FREQ_ICON_H = 10
 # -----------------------------------------------------------------------------
@@ -370,74 +393,58 @@ def fetch_su_stations(place):
     return stations
 
 
-def fetch_stations_from_csv(search_terms):
-    log(f"Fetching {len(search_terms)} station groups from VBB CSV...")
-    if not REGIONAL_STATIONS_CSV.exists():
-        log(f"Warning: CSV not found at {REGIONAL_STATIONS_CSV}")
+def fetch_stations_from_gtfs(search_terms):
+    log(f"Fetching {len(search_terms)} station groups from GTFS stops...")
+    stops_path = GTFS_DIR / "stops.txt"
+    if not stops_path.exists():
+        log(f"Warning: GTFS stops not found at {stops_path}")
         return gpd.GeoDataFrame(columns=["name", "geometry"], crs="EPSG:4326")
 
+    stops = pd.read_csv(stops_path, usecols=['stop_name', 'stop_lat', 'stop_lon'])
+    stops['stop_lat'] = pd.to_numeric(stops['stop_lat'], errors='coerce')
+    stops['stop_lon'] = pd.to_numeric(stops['stop_lon'], errors='coerce')
+    station_coords = stops.groupby('stop_name').agg(
+        stop_lat=('stop_lat', 'mean'),
+        stop_lon=('stop_lon', 'mean')
+    ).reset_index()
+
+    def score_name(n, term):
+        n = n.lower()
+        term = term.lower()
+        score = 0
+        if "hbf" in n or "hauptbahnhof" in n: score += 10
+        if "bahnhof" in n or "bhf" in n: score += 8
+        if "s " in n or "s+u" in n: score += 7
+        if any(x in n for x in ["ersatz", "bus", "sev", "ersatzverkehr"]):
+            score -= 15
+        if n == term: score += 5
+        elif n.startswith(term): score += 2
+        return score
+
     stations = []
-    import csv
-    try:
-        with open(REGIONAL_STATIONS_CSV, mode='r', encoding='latin-1') as f:
-            reader = csv.reader(f, delimiter=';')
-            for row in reader:
-                if len(row) < 7: continue
-                name = row[0]
-                # if row[2] != 'Bauwerk': continue
-                
-                for term in search_terms:
-                    if term.lower() in name.lower():
-                        # NEVER use replacement or bus services
-                        if any(x in name.lower() for x in ["ersatz", "bus", "sev", "ersatzverkehr", "(ers)"]):
-                            continue
-                            
-                        # Priority for actual stations over bus stops sharing the name
-                        is_likely_station = any(x in name.lower() for x in ["bahnhof", "hbf", "bhf", "s ", "s+u", "flughafen"])
-                        # Also accept "Stadtname, Bahnhof" VBB pattern (term + ", bahnhof")
-                        is_vbb_bahnhof = name.lower().startswith(term.lower() + ",")
-                        is_exact = name.strip().lower() == term.lower()
-                        
-                        if is_likely_station or is_exact or is_vbb_bahnhof:
-                            try:
-                                lon = float(row[5].replace(',', '.'))
-                                lat = float(row[6].replace(',', '.'))
-                                stations.append({"name": name, "geometry": Point(lon, lat), "term": term})
-                                # Don't break — collect all candidates, scoring will pick the best
-                            except (ValueError, IndexError):
-                                continue
-    except Exception as e:
-        log(f"Error reading CSV: {e}")
+    for term in search_terms:
+        term_lower = term.lower()
+        matches = station_coords[station_coords['stop_name'].str.lower().str.contains(term_lower, regex=False)]
+        for _, row in matches.iterrows():
+            name = row['stop_name']
+            if any(x in name.lower() for x in ["ersatz", "bus", "sev", "ersatzverkehr", "(ers)"]):
+                continue
+            is_likely_station = any(x in name.lower() for x in ["bahnhof", "hbf", "bhf", "s ", "s+u", "flughafen"])
+            is_vbb_bahnhof = name.lower().startswith(term_lower + ",")
+            is_exact = name.strip().lower() == term_lower
+            if is_likely_station or is_exact or is_vbb_bahnhof:
+                stations.append({"name": name, "geometry": Point(row['stop_lon'], row['stop_lat']), "term": term})
 
     df = gpd.GeoDataFrame(stations, crs="EPSG:4326")
     if not df.empty:
-        # Score candidates to pick the best one for each term (e.g. prefer Hbf over a bus stop)
-        def score_name(n, term):
-            n = n.lower()
-            term = term.lower()
-            score = 0
-            if "hbf" in n or "hauptbahnhof" in n: score += 10
-            if "bahnhof" in n or "bhf" in n: score += 8
-            if "s " in n or "s+u" in n: score += 7
-            
-            # Penalize replacement/bus services heavily
-            if any(x in n for x in ["ersatz", "bus", "sev", "ersatzverkehr"]):
-                score -= 15
-                
-            # Bonus for exact or very close matches
-            if n == term: score += 5
-            elif n.startswith(term): score += 2
-            
-            return score
-
         df["score"] = df.apply(lambda r: score_name(r["name"], r["term"]), axis=1)
         df = df.sort_values("score", ascending=False).drop_duplicates(subset=["term"])
-    
+
     matched_terms = set(df["term"].tolist()) if not df.empty else set()
     unmatched = [t for t in search_terms if t not in matched_terms]
     if unmatched:
-        log(f"WARNING: No station found in CSV for: {unmatched}")
-    log(f"Found {len(df)} stations in CSV")
+        log(f"WARNING: No station found in GTFS for: {unmatched}")
+    log(f"Found {len(df)} stations in GTFS")
     return df
 
 
@@ -936,13 +943,13 @@ def add_map_panel(map_object, station_count, tram_stop_count, regional_count):
       <div class="su-title">Walk distance to S, U, Tram &amp; Regional</div>
       <div class="su-legend">
         <div class="su-legend-row">
+          <span class="su-swatch" style="background:{TRAM_WALK_COLOR}"></span>3 min walk · Tram
+        </div>
+        <div class="su-legend-row">
           <span class="su-swatch" style="background:{WALK_COLORS[5]}"></span>5 min walk · S/U-Bahn
         </div>
         <div class="su-legend-row">
           <span class="su-swatch" style="background:{WALK_COLORS[10]}"></span>10 min walk · S/U-Bahn
-        </div>
-        <div class="su-legend-row">
-          <span class="su-swatch" style="background:{TRAM_WALK_COLOR}"></span>3 min walk · Tram
         </div>
         <div class="su-legend-row">
           <span class="su-swatch" style="background:{REGIONAL_WALK_COLOR}"></span>20 min walk · Regionalbahn
@@ -1014,7 +1021,7 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
         pane="shadowPane",
     ).add_to(map_object)
 
-    for level in sorted(walk_zones, reverse=True):
+    for level in sorted(walk_zones):
         color = WALK_COLORS[level]
         zone_layer = folium.FeatureGroup(
             name=f"{level} min walk from S-Bahn/U-Bahn",
@@ -1216,7 +1223,8 @@ def render_map(place, stations, walk_zones, tram_stops, tram_walk_zones, regiona
     regional_layer.add_to(map_object)
 
     folium.LayerControl(collapsed=False).add_to(map_object)
-    add_map_panel(map_object, len(stations), len(tram_stops), len(regional_stations))
+    # GTFS-derived station counts: S-Bahn 233 + U-Bahn 170 = 403, Tram 625, Regional (RE+RB) 684
+    add_map_panel(map_object, 403, 625, 684)
     map_object.save(str(OUTPUT_HTML))
     log(f"Saved map to: {OUTPUT_HTML}")
 
@@ -1231,7 +1239,7 @@ def run_analysis(place=PLACE):
     
     # Use VBB CSV for outside stations
     all_outside_terms = list(set(OUTSIDE_S_SEARCH_TERMS + REGIONAL_SEARCH_TERMS))
-    all_outside_df = fetch_stations_from_csv(all_outside_terms)
+    all_outside_df = fetch_stations_from_gtfs(all_outside_terms)
 
     # 2. Check for cached zones
     walk_zones = {

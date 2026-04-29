@@ -1,9 +1,8 @@
 import pandas as pd
 from pathlib import Path
 import os
-import re
 
-GTFS_DIR = Path("Fahrplan_VBB-2021")
+GTFS_DIR = Path("Fahrplan_VBB-2026")
 CACHE_DIR = Path("cache")
 
 def compute_frequencies():
@@ -61,91 +60,10 @@ def compute_frequencies():
         'lines': combine_lines
     }).reset_index()
 
-    print("Applying artificial SEV adjustments for U5, U2, and S-Bahn gaps...")
-    # U5 stations
-    u5_base_names = [
-        "U Weberwiese", "U Samariterstr", "U Schillingstr", "U Strausberger Platz",
-        "U Frankfurter Tor", "U Magdalenenstr", "U Friedrichsfelde", "U Tierpark",
-        "U Biesdorf-Süd", "U Elsterwerdaer Platz", "U Kaulsdorf-Nord", "U Kienberg",
-        "U Cottbusser Platz", "U Hellersdorf", "U Louis-Lewin-Str", "U Hönow",
-        "U Rotes Rathaus", "U Unter den Linden", "U Museumsinsel", "U Bundestag",
-        "S+U Alexanderplatz", "S+U Frankfurter Allee", "S+U Lichtenberg", "S+U Wuhletal",
-        "S+U Brandenburger Tor", "S+U Berlin Hauptbahnhof"
-    ]
-    
-    # U2, S-Bahn, and Regional stations reported as missing/zero due to construction or SEV
-    extra_fixes = [
-        {"names": ["U Neu-Westend", "U Olympia-Stadion", "U Ruhleben", "U Theodor-Heuss-Platz"], "line": "U2|400", "deps": 420},
-        {"names": ["S Olympiastadion", "S Pichelsberg", "S Stresow", "S Messe Süd", "S Heerstraße"], "line": "S3|109,S9|109", "deps": 350},
-        {"names": ["Ludwigsfelde"], "line": "RE3|100,RE4|100", "deps": 100},
-        # Stations with VBB data gaps (1-3 departures instead of realistic values)
-        {"names": ["Sachsenhausen, Bahnhof"], "line": "RE5|100", "deps": 60},
-        {"names": ["Baruth, Bahnhof"], "line": "RE8|100", "deps": 40},
-        {"names": ["Zossen, Bahnhof"], "line": "RE8|100,RB24|100", "deps": 60},
-        {"names": ["Basdorf (BAR), Bahnhof"], "line": "RB27|100", "deps": 40},
-        {"names": ["Walddrehna, Bahnhof"], "line": "RE8|100", "deps": 20},
-        {"names": ["Wünsdorf-Waldstadt, Bahnhof"], "line": "RE8|100,RB24|100", "deps": 30},
-        {"names": ["Wustermark, Bahnhof"], "line": "RE4|100", "deps": 30},
-    ]
-    
-    # Process U5 first (existing logic)
-    u5_mask = stops['stop_name'].str.contains('|'.join(u5_base_names), case=False, na=False)
-    u5_stops_raw = stops[u5_mask].copy()
-    u5_stops_raw = u5_stops_raw[~u5_stops_raw['stop_name'].str.contains('/', na=False)]
-    u5_stops_raw['stop_lat'] = pd.to_numeric(u5_stops_raw['stop_lat'], errors='coerce')
-    u5_stops_raw['stop_lon'] = pd.to_numeric(u5_stops_raw['stop_lon'], errors='coerce')
-    u5_stops = u5_stops_raw.groupby('stop_name').agg({'stop_lat': 'mean', 'stop_lon': 'mean'}).reset_index()
-    u5_stops['daily_departures'] = 420
-    u5_stops['lines'] = "U5|400"
-    
-    # Merge all into station_freq
-    station_freq = station_freq.set_index('stop_name')
-    
-    # Apply U5 fixes
-    for _, row in u5_stops.iterrows():
-        name = row['stop_name']
-        if name in station_freq.index:
-            if 'U5' not in str(station_freq.at[name, 'lines']):
-                station_freq.at[name, 'daily_departures'] += 420
-                existing_lines = str(station_freq.at[name, 'lines'])
-                station_freq.at[name, 'lines'] = (existing_lines + ",U5|400") if existing_lines != 'nan' and existing_lines else "U5|400"
-        else:
-            station_freq.loc[name] = [row['stop_lat'], row['stop_lon'], row['daily_departures'], row['lines']]
-            
-    # Apply Extra fixes (U2 / S-Bahn)
-    for fix in extra_fixes:
-        mask = stops['stop_name'].str.contains('|'.join(fix['names']), case=False, na=False)
-        stops_raw = stops[mask].copy()
-        stops_raw = stops_raw[~stops_raw['stop_name'].str.contains('/', na=False)]
-        
-        # For regional stations, prefer names without commas (the main station name) 
-        # to avoid averaging with distant bus stop locations.
-        if any(l.startswith('RE') or l.startswith('RB') for l in fix['line'].split(',')):
-            no_commas = stops_raw[~stops_raw['stop_name'].str.contains(',', na=False)]
-            if not no_commas.empty:
-                stops_raw = no_commas
-
-        stops_raw['stop_lat'] = pd.to_numeric(stops_raw['stop_lat'], errors='coerce')
-        stops_raw['stop_lon'] = pd.to_numeric(stops_raw['stop_lon'], errors='coerce')
-        grouped = stops_raw.groupby('stop_name').agg({'stop_lat': 'mean', 'stop_lon': 'mean'}).reset_index()
-        
-        for _, row in grouped.iterrows():
-            name = row['stop_name']
-            line_id = fix['line'].split('|')[0]
-            if name in station_freq.index:
-                if line_id not in str(station_freq.at[name, 'lines']):
-                    station_freq.at[name, 'daily_departures'] += fix['deps']
-                    existing_lines = str(station_freq.at[name, 'lines'])
-                    station_freq.at[name, 'lines'] = (existing_lines + "," + fix['line']) if existing_lines != 'nan' and existing_lines else fix['line']
-            else:
-                station_freq.loc[name] = [row['stop_lat'], row['stop_lon'], fix['deps'], fix['line']]
-            
-    station_freq = station_freq.reset_index()
-
     CACHE_DIR.mkdir(exist_ok=True)
     out_file = CACHE_DIR / "station_frequencies.csv"
     station_freq.to_csv(out_file, index=False)
-    print(f"Done! Saved frequency data (including U5 fix) for {len(station_freq)} stations to {out_file}")
+    print(f"Done! Saved frequency data for {len(station_freq)} stations to {out_file}")
 
 if __name__ == "__main__":
     compute_frequencies()
